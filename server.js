@@ -35,20 +35,21 @@ const authenticate = (req, res, next) => {
 
 // ==================== ROTAS ====================
 
-// Health Check
+// Health Check (IMPORTANTE: Railway precisa disso)
 app.get('/', (req, res) => {
   res.json({ 
     status: 'online',
     sessions: clients.size,
     message: 'WPPConnect Server - Divus Legal',
-    uptime: process.uptime(),
-    memory: process.memoryUsage()
+    timestamp: new Date().toISOString()
   });
 });
 
-// Rota de ready check para Railway
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
+  res.status(200).json({ 
+    status: 'healthy',
+    uptime: process.uptime()
+  });
 });
 
 // 1. CONECTAR - Iniciar Sessão
@@ -57,40 +58,48 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
   const { webhook, waitQrCode } = req.body;
   
   try {
+    // Verificar se já existe
     if (clients.has(session)) {
       const client = clients.get(session);
-      const isConnected = await client.isConnected();
-      
-      return res.json({ 
-        success: true,
-        message: 'Session already exists',
-        status: isConnected ? 'connected' : 'qrcode',
-        session,
-        qrCode: qrCodes.get(session) || null
-      });
+      try {
+        const isConnected = await client.isConnected();
+        return res.json({ 
+          success: true,
+          message: 'Session already exists',
+          status: isConnected ? 'connected' : 'qrcode',
+          session,
+          qrCode: qrCodes.get(session) || null
+        });
+      } catch (err) {
+        // Se der erro ao verificar, remove e recria
+        console.log(`Removing stale session: ${session}`);
+        clients.delete(session);
+        qrCodes.delete(session);
+      }
     }
 
     let qrCode = null;
     let sessionStatus = 'initializing';
 
-    console.log(`🚀 Starting session: ${session}`);
+    console.log(`🚀 Creating session: ${session}`);
 
+    // Criar cliente com configuração otimizada
     const client = await wppconnect.create({
       session: session,
       catchQR: (base64Qr) => {
         qrCode = base64Qr;
         qrCodes.set(session, base64Qr);
         sessionStatus = 'qrcode';
-        console.log(`📱 QR Code generated for ${session}`);
+        console.log(`📱 QR generated for ${session}`);
       },
       statusFind: (status) => {
-        console.log(`📊 Status ${session}:`, status);
+        console.log(`📊 ${session}: ${status}`);
         sessionStatus = status;
         
         if (status === 'authenticated' || status === 'isLogged') {
           sessionStatus = 'connected';
           qrCodes.delete(session);
-          console.log(`✅ ${session} connected`);
+          console.log(`✅ ${session} authenticated`);
         }
       },
       headless: true,
@@ -100,6 +109,8 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
       logQR: false,
       disableWelcome: true,
       updatesLog: false,
+      autoClose: 60000, // Fecha após 1 min de inatividade
+      createPathFileToken: true,
       browserArgs: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -108,55 +119,65 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
         '--no-first-run',
         '--no-zygote',
         '--single-process',
-        '--disable-gpu'
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--disable-extensions'
       ]
     });
 
     clients.set(session, client);
 
+    // Aguardar QR code se solicitado
     if (waitQrCode) {
-      const maxWait = 12000;
-      const startTime = Date.now();
+      const timeout = 10000; // 10 segundos
+      const start = Date.now();
       
-      while (!qrCode && (Date.now() - startTime) < maxWait) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+      while (!qrCode && (Date.now() - start) < timeout) {
+        await new Promise(resolve => setTimeout(resolve, 300));
       }
     }
 
     res.json({
       success: true,
-      session: session,
-      qrCode: qrCode,
+      session,
+      qrCode,
       status: sessionStatus,
-      message: qrCode ? 'QR Code generated' : 'Session started',
+      message: qrCode ? 'QR Code ready' : 'Session starting',
       webhook: webhook || null
     });
 
   } catch (error) {
-    console.error(`❌ Error starting session ${session}:`, error);
+    console.error(`❌ Error creating ${session}:`, error.message);
+    
+    // Limpar se falhou
+    clients.delete(session);
+    qrCodes.delete(session);
+    
     res.status(500).json({ 
       success: false,
-      error: error.message 
+      error: error.message,
+      session
     });
   }
 });
 
 // 2. OBTER QR CODE
-app.get('/api/:session/qrcode', authenticate, async (req, res) => {
+app.get('/api/:session/qrcode', authenticate, (req, res) => {
   const { session } = req.params;
   const qrCode = qrCodes.get(session);
   
   if (!qrCode) {
     return res.status(404).json({ 
       success: false,
-      error: 'QR Code not available'
+      error: 'QR Code not available',
+      message: 'Session may be connected or not started'
     });
   }
 
   res.json({
     success: true,
-    session: session,
-    qrCode: qrCode
+    session,
+    qrCode
   });
 });
 
@@ -169,21 +190,25 @@ app.get('/api/:session/status', authenticate, async (req, res) => {
     return res.json({ 
       success: false,
       status: 'notLogged',
-      session: session,
+      session,
       connected: false
     });
   }
 
   try {
-    const isConnected = await client.isConnected();
+    const isConnected = await Promise.race([
+      client.isConnected(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+    ]);
     
     res.json({
       success: true,
-      session: session,
+      session,
       status: isConnected ? 'connected' : 'notLogged',
       connected: isConnected
     });
   } catch (error) {
+    console.error(`Status check error for ${session}:`, error.message);
     res.json({ 
       success: false,
       status: 'error',
@@ -207,18 +232,28 @@ app.post('/api/:session/logout', authenticate, async (req, res) => {
 
   try {
     console.log(`🔌 Logging out: ${session}`);
-    await client.logout();
+    
+    await Promise.race([
+      client.logout(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Logout timeout')), 5000))
+    ]);
+    
     await client.close();
     clients.delete(session);
     qrCodes.delete(session);
     
     res.json({ 
       success: true,
-      message: 'Logged out',
-      session: session
+      message: 'Logged out successfully',
+      session
     });
   } catch (error) {
-    console.error(`Error logout ${session}:`, error);
+    console.error(`Logout error for ${session}:`, error.message);
+    
+    // Força remoção mesmo com erro
+    clients.delete(session);
+    qrCodes.delete(session);
+    
     res.status(500).json({ 
       success: false,
       error: error.message 
@@ -258,18 +293,19 @@ app.post('/api/:session/sendText', authenticate, async (req, res) => {
     }
 
     const phoneNumber = phone.includes('@c.us') ? phone : `${phone}@c.us`;
-    console.log(`💬 Sending to ${phoneNumber}`);
+    console.log(`💬 Sending to ${phoneNumber} from ${session}`);
     
     const result = await client.sendText(phoneNumber, message);
     
     res.json({ 
       success: true,
-      result: result,
-      session: session,
-      to: phoneNumber
+      result,
+      session,
+      to: phoneNumber,
+      message: 'Sent successfully'
     });
   } catch (error) {
-    console.error(`Error sending:`, error);
+    console.error(`Send error:`, error.message);
     res.status(500).json({ 
       success: false,
       error: error.message 
@@ -289,7 +325,7 @@ app.get('/api/sessions', authenticate, async (req, res) => {
         status: isConnected ? 'connected' : 'disconnected',
         connected: isConnected
       });
-    } catch (error) {
+    } catch {
       sessions.push({
         name,
         status: 'error',
@@ -301,33 +337,46 @@ app.get('/api/sessions', authenticate, async (req, res) => {
   res.json({
     success: true,
     count: sessions.length,
-    sessions: sessions
+    sessions
   });
 });
 
 // ==================== SERVIDOR ====================
 
+let isShuttingDown = false;
+
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server running on port ${PORT}`);
-  console.log(`🔑 API Key: ${API_KEY.substring(0, 8)}...`);
+  console.log(`🔑 API Key configured`);
+  console.log(`🌐 Ready to accept connections`);
 });
+
+// Timeout maior para o servidor
+server.timeout = 120000; // 2 minutos
 
 // Graceful shutdown
 const shutdown = async (signal) => {
-  console.log(`\n⚠️  ${signal} received, shutting down gracefully...`);
+  if (isShuttingDown) return;
+  isShuttingDown = true;
   
+  console.log(`\n⚠️  ${signal} - Shutting down...`);
+  
+  // Para de aceitar novas conexões
   server.close(() => {
-    console.log('🔌 HTTP server closed');
+    console.log('🔌 Server closed');
   });
 
+  // Fecha todas as sessões
+  const closePromises = [];
   for (const [name, client] of clients.entries()) {
-    try {
-      await client.close();
-      console.log(`✅ ${name} closed`);
-    } catch (error) {
-      console.error(`❌ Error closing ${name}:`, error);
-    }
+    closePromises.push(
+      client.close()
+        .then(() => console.log(`✅ Closed ${name}`))
+        .catch(err => console.error(`❌ Error closing ${name}:`, err.message))
+    );
   }
+
+  await Promise.allSettled(closePromises);
   
   clients.clear();
   qrCodes.clear();
@@ -336,18 +385,29 @@ const shutdown = async (signal) => {
     await pool.end();
   }
   
+  console.log('👋 Goodbye!');
   process.exit(0);
 };
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-// Handle uncaught errors
+// Handle errors
 process.on('uncaughtException', (error) => {
-  console.error('❌ Uncaught Exception:', error);
-  shutdown('UNCAUGHT_EXCEPTION');
+  console.error('❌ Uncaught Exception:', error.message);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+process.on('unhandledRejection', (reason) => {
+  console.error('❌ Unhandled Rejection:', reason);
 });
+
+console.log('🚀 WPPConnect Server initialized');
+```
+
+## Configurações no Railway
+
+1. **Adicione estas variáveis de ambiente:**
+```
+API_KEY=euz*vtr9ryw2ckd_FWN
+PORT=8080
+NODE_ENV=production
