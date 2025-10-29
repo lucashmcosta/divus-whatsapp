@@ -408,6 +408,6 @@ console.log('🚀 WPPConnect Server initialized');
 
 1. **Adicione estas variáveis de ambiente:**
 ```
-API_KEY=euz*vtr9ryw2ckd_FWN
+API_KEY=sua_chave_aqui
 PORT=8080
 NODE_ENV=production
