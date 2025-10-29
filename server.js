@@ -110,7 +110,9 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
     console.log(`🌍 Environment: NODE_ENV=${process.env.NODE_ENV}`);
     console.log(`🌐 Chromium path: ${process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium'}`);
 
-    // Criar cliente com timeout
+    // Criar cliente em background e aguardar QR code
+    console.log(`⏳ Creating WPPConnect client (this may take 10-20s)...`);
+
     const createClientPromise = wppconnect.create({
       session: session,
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
@@ -137,7 +139,7 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
       logQR: false,
       disableWelcome: true,
       updatesLog: false,
-      autoClose: 60000,
+      autoClose: 300000, // 5 minutos - dar tempo para escanear QR
       createPathFileToken: true,
       browserArgs: [
         '--no-sandbox',
@@ -151,21 +153,23 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
       ]
     });
 
-    // Timeout de 30 segundos para criar o cliente
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Timeout creating client (30s)')), 30000)
-    );
+    // Salvar o cliente quando estiver pronto (em background)
+    createClientPromise
+      .then(client => {
+        clients.set(session, client);
+        clientCreated = true;
+        console.log(`✅ Client fully initialized for ${session}`);
+      })
+      .catch(err => {
+        console.error(`❌ Error creating client for ${session}:`, err.message);
+        clients.delete(session);
+        qrCodes.delete(session);
+      });
 
-    const client = await Promise.race([createClientPromise, timeoutPromise]);
-    clientCreated = true;
-    clients.set(session, client);
-
-    console.log(`✅ Client created successfully for ${session}`);
-
-    // Aguardar QR code se solicitado
+    // Aguardar APENAS o QR code (não o cliente completo)
     if (waitQrCode) {
-      console.log(`⏳ Waiting for QR code generation...`);
-      const qrTimeout = 15000; // 15 segundos
+      console.log(`⏳ Waiting for QR code generation (up to 30s)...`);
+      const qrTimeout = 30000; // 30 segundos para QR aparecer
       const start = Date.now();
 
       while (!qrCode && (Date.now() - start) < qrTimeout) {
@@ -173,18 +177,20 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
       }
 
       if (qrCode) {
-        console.log(`✅ QR code ready for ${session}`);
+        console.log(`✅ QR code ready for ${session}, returning to client`);
       } else {
-        console.log(`⚠️ QR code not generated within timeout for ${session}`);
+        console.log(`⚠️ QR code not generated within 30s for ${session}`);
+        throw new Error('QR code generation timeout - please try again');
       }
     }
 
+    // Retornar imediatamente após QR code estar disponível
     res.json({
       success: true,
       session,
       qrCode,
       status: sessionStatus,
-      message: qrCode ? 'QR Code ready' : 'Session starting',
+      message: qrCode ? 'QR Code ready - scan to connect' : 'Session starting',
       webhook: webhook || null
     });
 
