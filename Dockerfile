@@ -1,11 +1,11 @@
-FROM node:20-slim
+FROM node:20-bullseye
 
-# Instalar dependências do Chrome
+# Instalar TODAS as dependências do Chrome
 RUN apt-get update && apt-get install -y \
     wget \
+    gnupg \
     ca-certificates \
     fonts-liberation \
-    libappindicator3-1 \
     libasound2 \
     libatk-bridge2.0-0 \
     libatk1.0-0 \
@@ -39,35 +39,23 @@ RUN apt-get update && apt-get install -y \
     libxtst6 \
     lsb-release \
     xdg-utils \
-    --no-install-recommends \
+    chromium \
     && rm -rf /var/lib/apt/lists/*
+
+# Configurar Puppeteer para usar o Chromium instalado
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV CHROME_BIN=/usr/bin/chromium
 
 WORKDIR /app
 
-# Copiar package files
 COPY package*.json ./
+RUN npm ci --omit=dev
 
-# Instalar dependências
-RUN npm ci --production
-
-# Copiar código
 COPY . .
 
-# Criar diretório para tokens
-RUN mkdir -p /app/tokens
+RUN mkdir -p /app/tokens /app/sessions
 
-# Expor porta
 EXPOSE 8080
 
-# Iniciar servidor
 CMD ["node", "server.js"]
-```
-
-## Estrutura do projeto:
-```
-seu-projeto/
-├── server.js
-├── package.json
-├── .env (não commitar)
-├── Dockerfile (escolha este OU nixpacks.toml)
-└── nixpacks.toml (escolha este OU Dockerfile)
