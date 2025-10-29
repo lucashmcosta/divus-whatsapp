@@ -84,46 +84,46 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
     console.log(`🚀 Creating session: ${session}`);
 
     // Criar cliente com configuração otimizada
-    const client = await wppconnect.create({
-      session: session,
-      catchQR: (base64Qr) => {
-        qrCode = base64Qr;
-        qrCodes.set(session, base64Qr);
-        sessionStatus = 'qrcode';
-        console.log(`📱 QR generated for ${session}`);
-      },
-      statusFind: (status) => {
-        console.log(`📊 ${session}: ${status}`);
-        sessionStatus = status;
-        
-        if (status === 'authenticated' || status === 'isLogged') {
-          sessionStatus = 'connected';
-          qrCodes.delete(session);
-          console.log(`✅ ${session} authenticated`);
-        }
-      },
-      headless: true,
-      devtools: false,
-      useChrome: true,
-      debug: false,
-      logQR: false,
-      disableWelcome: true,
-      updatesLog: false,
-      autoClose: 60000, // Fecha após 1 min de inatividade
-      createPathFileToken: true,
-      browserArgs: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-gpu',
-        '--disable-software-rasterizer',
-        '--disable-extensions'
-      ]
-    });
+const client = await wppconnect.create({
+  session: session,
+  // ADICIONE ESTA LINHA:
+  executablePath: '/usr/bin/chromium',
+  catchQR: (base64Qr) => {
+    qrCode = base64Qr;
+    qrCodes.set(session, base64Qr);
+    sessionStatus = 'qrcode';
+    console.log(`📱 QR generated for ${session}`);
+  },
+  statusFind: (status) => {
+    console.log(`📊 ${session} status: ${status}`);
+    sessionStatus = status;
+    
+    if (status === 'authenticated' || status === 'isLogged') {
+      sessionStatus = 'connected';
+      qrCodes.delete(session);
+      console.log(`✅ ${session} authenticated`);
+    }
+  },
+  headless: true,
+  devtools: false,
+  useChrome: false, // MUDE PARA FALSE
+  debug: false,
+  logQR: false,
+  disableWelcome: true,
+  updatesLog: false,
+  autoClose: 60000,
+  createPathFileToken: true,
+  browserArgs: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-accelerated-2d-canvas',
+    '--no-first-run',
+    '--no-zygote',
+    '--single-process',
+    '--disable-gpu'
+  ]
+});
 
     clients.set(session, client);
 
