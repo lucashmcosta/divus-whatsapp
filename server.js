@@ -40,17 +40,23 @@ app.get('/', (req, res) => {
   res.json({ 
     status: 'online',
     sessions: clients.size,
-    message: 'WPPConnect Server - Divus Legal'
+    message: 'WPPConnect Server - Divus Legal',
+    uptime: process.uptime(),
+    memory: process.memoryUsage()
   });
 });
 
-// 1. CONECTAR - Iniciar Sessão (chamado pelo Lovable)
+// Rota de ready check para Railway
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
+// 1. CONECTAR - Iniciar Sessão
 app.post('/api/:session/start-session', authenticate, async (req, res) => {
   const { session } = req.params;
   const { webhook, waitQrCode } = req.body;
   
   try {
-    // Se já existe, retorna info da sessão
     if (clients.has(session)) {
       const client = clients.get(session);
       const isConnected = await client.isConnected();
@@ -81,11 +87,10 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
         console.log(`📊 Status ${session}:`, status);
         sessionStatus = status;
         
-        // Limpar QR code quando conectado
         if (status === 'authenticated' || status === 'isLogged') {
           sessionStatus = 'connected';
           qrCodes.delete(session);
-          console.log(`✅ ${session} connected successfully`);
+          console.log(`✅ ${session} connected`);
         }
       },
       headless: true,
@@ -93,6 +98,8 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
       useChrome: true,
       debug: false,
       logQR: false,
+      disableWelcome: true,
+      updatesLog: false,
       browserArgs: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -100,16 +107,15 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
+        '--single-process',
         '--disable-gpu'
       ]
     });
 
-    // Salvar cliente
     clients.set(session, client);
 
-    // Se waitQrCode é true, aguarda o QR Code ser gerado
     if (waitQrCode) {
-      const maxWait = 15000; // 15 segundos
+      const maxWait = 12000;
       const startTime = Date.now();
       
       while (!qrCode && (Date.now() - startTime) < maxWait) {
@@ -135,30 +141,26 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
   }
 });
 
-// 2. OBTER QR CODE (chamado pelo Lovable)
+// 2. OBTER QR CODE
 app.get('/api/:session/qrcode', authenticate, async (req, res) => {
   const { session } = req.params;
-  
-  // Verifica se tem QR code armazenado
   const qrCode = qrCodes.get(session);
   
   if (!qrCode) {
     return res.status(404).json({ 
       success: false,
-      error: 'QR Code not available',
-      message: 'Session may be already connected or not started'
+      error: 'QR Code not available'
     });
   }
 
   res.json({
     success: true,
     session: session,
-    qrCode: qrCode,
-    message: 'QR Code retrieved'
+    qrCode: qrCode
   });
 });
 
-// 3. STATUS DA SESSÃO (chamado pelo Lovable)
+// 3. STATUS DA SESSÃO
 app.get('/api/:session/status', authenticate, async (req, res) => {
   const { session } = req.params;
   const client = clients.get(session);
@@ -174,17 +176,14 @@ app.get('/api/:session/status', authenticate, async (req, res) => {
 
   try {
     const isConnected = await client.isConnected();
-    const state = await client.getConnectionState();
     
     res.json({
       success: true,
       session: session,
       status: isConnected ? 'connected' : 'notLogged',
-      state: state,
       connected: isConnected
     });
   } catch (error) {
-    console.error(`Error checking status ${session}:`, error);
     res.json({ 
       success: false,
       status: 'error',
@@ -194,7 +193,7 @@ app.get('/api/:session/status', authenticate, async (req, res) => {
   }
 });
 
-// 4. LOGOUT/DESCONECTAR (chamado pelo Lovable)
+// 4. LOGOUT
 app.post('/api/:session/logout', authenticate, async (req, res) => {
   const { session } = req.params;
   const client = clients.get(session);
@@ -207,7 +206,7 @@ app.post('/api/:session/logout', authenticate, async (req, res) => {
   }
 
   try {
-    console.log(`🔌 Logging out session: ${session}`);
+    console.log(`🔌 Logging out: ${session}`);
     await client.logout();
     await client.close();
     clients.delete(session);
@@ -215,11 +214,11 @@ app.post('/api/:session/logout', authenticate, async (req, res) => {
     
     res.json({ 
       success: true,
-      message: 'Session logged out successfully',
+      message: 'Logged out',
       session: session
     });
   } catch (error) {
-    console.error(`Error logging out ${session}:`, error);
+    console.error(`Error logout ${session}:`, error);
     res.status(500).json({ 
       success: false,
       error: error.message 
@@ -227,7 +226,7 @@ app.post('/api/:session/logout', authenticate, async (req, res) => {
   }
 });
 
-// 5. ENVIAR MENSAGEM (chamado pelo Lovable)
+// 5. ENVIAR MENSAGEM
 app.post('/api/:session/sendText', authenticate, async (req, res) => {
   const { session } = req.params;
   const { phone, message } = req.body;
@@ -235,8 +234,7 @@ app.post('/api/:session/sendText', authenticate, async (req, res) => {
   if (!phone || !message) {
     return res.status(400).json({ 
       success: false,
-      error: 'Missing required fields',
-      required: { phone: 'string', message: 'string' }
+      error: 'Missing phone or message'
     });
   }
 
@@ -245,7 +243,7 @@ app.post('/api/:session/sendText', authenticate, async (req, res) => {
   if (!client) {
     return res.status(404).json({ 
       success: false,
-      error: 'Session not found. Please start session first.' 
+      error: 'Session not found' 
     });
   }
 
@@ -255,15 +253,12 @@ app.post('/api/:session/sendText', authenticate, async (req, res) => {
     if (!isConnected) {
       return res.status(400).json({
         success: false,
-        error: 'Session not connected',
-        message: 'Please reconnect the session'
+        error: 'Session not connected'
       });
     }
 
-    // Formatar número para WhatsApp
     const phoneNumber = phone.includes('@c.us') ? phone : `${phone}@c.us`;
-    
-    console.log(`💬 Sending message to ${phoneNumber} from ${session}`);
+    console.log(`💬 Sending to ${phoneNumber}`);
     
     const result = await client.sendText(phoneNumber, message);
     
@@ -271,11 +266,10 @@ app.post('/api/:session/sendText', authenticate, async (req, res) => {
       success: true,
       result: result,
       session: session,
-      to: phoneNumber,
-      message: 'Message sent successfully'
+      to: phoneNumber
     });
   } catch (error) {
-    console.error(`Error sending message from ${session}:`, error);
+    console.error(`Error sending:`, error);
     res.status(500).json({ 
       success: false,
       error: error.message 
@@ -283,7 +277,7 @@ app.post('/api/:session/sendText', authenticate, async (req, res) => {
   }
 });
 
-// 6. LISTAR SESSÕES ATIVAS
+// 6. LISTAR SESSÕES
 app.get('/api/sessions', authenticate, async (req, res) => {
   const sessions = [];
   
@@ -311,39 +305,25 @@ app.get('/api/sessions', authenticate, async (req, res) => {
   });
 });
 
-// ==================== ROTAS DE COMPATIBILIDADE ====================
-
-// Alias para rotas antigas (manter compatibilidade)
-app.post('/api/:session/start', authenticate, async (req, res) => {
-  req.body = { ...req.body, waitQrCode: true };
-  return app._router.handle(req, res, () => {});
-});
-
-app.post('/api/:session/send-message', authenticate, async (req, res) => {
-  return app._router.handle(req, res, () => {});
-});
-
-app.post('/api/:session/close', authenticate, async (req, res) => {
-  return app._router.handle(req, res, () => {});
-});
-
 // ==================== SERVIDOR ====================
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ WPPConnect Server running on port ${PORT}`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Server running on port ${PORT}`);
   console.log(`🔑 API Key: ${API_KEY.substring(0, 8)}...`);
-  console.log(`📊 Active sessions: ${clients.size}`);
-  console.log(`🌐 Health check: http://localhost:${PORT}`);
 });
 
 // Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('⚠️  SIGTERM received, closing sessions...');
+const shutdown = async (signal) => {
+  console.log(`\n⚠️  ${signal} received, shutting down gracefully...`);
   
+  server.close(() => {
+    console.log('🔌 HTTP server closed');
+  });
+
   for (const [name, client] of clients.entries()) {
     try {
       await client.close();
-      console.log(`✅ Session ${name} closed`);
+      console.log(`✅ ${name} closed`);
     } catch (error) {
       console.error(`❌ Error closing ${name}:`, error);
     }
@@ -351,22 +331,23 @@ process.on('SIGTERM', async () => {
   
   clients.clear();
   qrCodes.clear();
+  
+  if (pool) {
+    await pool.end();
+  }
+  
   process.exit(0);
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+// Handle uncaught errors
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  shutdown('UNCAUGHT_EXCEPTION');
 });
 
-process.on('SIGINT', async () => {
-  console.log('⚠️  SIGINT received, closing sessions...');
-  
-  for (const [name, client] of clients.entries()) {
-    try {
-      await client.close();
-      console.log(`✅ Session ${name} closed`);
-    } catch (error) {
-      console.error(`❌ Error closing ${name}:`, error);
-    }
-  }
-  
-  clients.clear();
-  qrCodes.clear();
-  process.exit(0);
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
