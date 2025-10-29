@@ -2,6 +2,7 @@ const express = require('express');
 const wppconnect = require('@wppconnect-team/wppconnect');
 const cors = require('cors');
 const { Pool } = require('pg');
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
@@ -37,18 +38,26 @@ const authenticate = (req, res, next) => {
 
 // Health Check (IMPORTANTE: Railway precisa disso)
 app.get('/', (req, res) => {
-  res.json({ 
+  res.json({
     status: 'online',
     sessions: clients.size,
     message: 'WPPConnect Server - Divus Legal',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    node_version: process.version,
+    platform: process.platform
   });
 });
 
 app.get('/health', (req, res) => {
-  res.status(200).json({ 
+  res.status(200).json({
     status: 'healthy',
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    sessions: clients.size,
+    memory: {
+      used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+      total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
+    },
+    chromium_path: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium'
   });
 });
 
@@ -56,14 +65,17 @@ app.get('/health', (req, res) => {
 app.post('/api/:session/start-session', authenticate, async (req, res) => {
   const { session } = req.params;
   const { webhook, waitQrCode } = req.body;
-  
+
   try {
+    console.log(`🚀 Starting session: ${session}`);
+
     // Verificar se já existe
     if (clients.has(session)) {
       const client = clients.get(session);
       try {
         const isConnected = await client.isConnected();
-        return res.json({ 
+        console.log(`♻️ Session ${session} already exists, connected: ${isConnected}`);
+        return res.json({
           success: true,
           message: 'Session already exists',
           status: isConnected ? 'connected' : 'qrcode',
@@ -72,7 +84,7 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
         });
       } catch (err) {
         // Se der erro ao verificar, remove e recria
-        console.log(`Removing stale session: ${session}`);
+        console.log(`🗑️ Removing stale session: ${session}`);
         clients.delete(session);
         qrCodes.delete(session);
       }
@@ -80,60 +92,78 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
 
     let qrCode = null;
     let sessionStatus = 'initializing';
+    let clientCreated = false;
 
-    console.log(`🚀 Creating session: ${session}`);
+    console.log(`📱 Creating WPPConnect client for: ${session}`);
+    console.log(`🌍 Environment: NODE_ENV=${process.env.NODE_ENV}`);
+    console.log(`🌐 Chromium path: ${process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium'}`);
 
-    // Criar cliente com configuração otimizada
-const client = await wppconnect.create({
-  session: session,
-  // ADICIONE ESTA LINHA:
-  executablePath: '/usr/bin/chromium',
-  catchQR: (base64Qr) => {
-    qrCode = base64Qr;
-    qrCodes.set(session, base64Qr);
-    sessionStatus = 'qrcode';
-    console.log(`📱 QR generated for ${session}`);
-  },
-  statusFind: (status) => {
-    console.log(`📊 ${session} status: ${status}`);
-    sessionStatus = status;
-    
-    if (status === 'authenticated' || status === 'isLogged') {
-      sessionStatus = 'connected';
-      qrCodes.delete(session);
-      console.log(`✅ ${session} authenticated`);
-    }
-  },
-  headless: true,
-  devtools: false,
-  useChrome: false, // MUDE PARA FALSE
-  debug: false,
-  logQR: false,
-  disableWelcome: true,
-  updatesLog: false,
-  autoClose: 60000,
-  createPathFileToken: true,
-  browserArgs: [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-accelerated-2d-canvas',
-    '--no-first-run',
-    '--no-zygote',
-    '--single-process',
-    '--disable-gpu'
-  ]
-});
+    // Criar cliente com timeout
+    const createClientPromise = wppconnect.create({
+      session: session,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+      catchQR: (base64Qr) => {
+        qrCode = base64Qr;
+        qrCodes.set(session, base64Qr);
+        sessionStatus = 'qrcode';
+        console.log(`✅ QR code generated for ${session}`);
+      },
+      statusFind: (status) => {
+        console.log(`📊 ${session} status changed: ${status}`);
+        sessionStatus = status;
 
+        if (status === 'authenticated' || status === 'isLogged') {
+          sessionStatus = 'connected';
+          qrCodes.delete(session);
+          console.log(`✅ ${session} authenticated successfully`);
+        }
+      },
+      headless: true,
+      devtools: false,
+      useChrome: false,
+      debug: false,
+      logQR: false,
+      disableWelcome: true,
+      updatesLog: false,
+      autoClose: 60000,
+      createPathFileToken: true,
+      browserArgs: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--disable-extensions'
+      ]
+    });
+
+    // Timeout de 30 segundos para criar o cliente
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Timeout creating client (30s)')), 30000)
+    );
+
+    const client = await Promise.race([createClientPromise, timeoutPromise]);
+    clientCreated = true;
     clients.set(session, client);
+
+    console.log(`✅ Client created successfully for ${session}`);
 
     // Aguardar QR code se solicitado
     if (waitQrCode) {
-      const timeout = 10000; // 10 segundos
+      console.log(`⏳ Waiting for QR code generation...`);
+      const qrTimeout = 15000; // 15 segundos
       const start = Date.now();
-      
-      while (!qrCode && (Date.now() - start) < timeout) {
-        await new Promise(resolve => setTimeout(resolve, 300));
+
+      while (!qrCode && (Date.now() - start) < qrTimeout) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      if (qrCode) {
+        console.log(`✅ QR code ready for ${session}`);
+      } else {
+        console.log(`⚠️ QR code not generated within timeout for ${session}`);
       }
     }
 
@@ -147,37 +177,69 @@ const client = await wppconnect.create({
     });
 
   } catch (error) {
-    console.error(`❌ Error creating ${session}:`, error.message);
-    
+    console.error(`❌ Error creating session ${session}:`);
+    console.error(`Error message: ${error.message}`);
+    console.error(`Error stack: ${error.stack}`);
+
     // Limpar se falhou
     clients.delete(session);
     qrCodes.delete(session);
-    
-    res.status(500).json({ 
+
+    res.status(500).json({
       success: false,
       error: error.message,
+      details: error.stack,
       session
     });
   }
 });
 
 // 2. OBTER QR CODE
-app.get('/api/:session/qrcode', authenticate, (req, res) => {
+app.get('/api/:session/qrcode', authenticate, async (req, res) => {
   const { session } = req.params;
+
+  console.log(`📱 QR code request for session: ${session}`);
+
+  const client = clients.get(session);
   const qrCode = qrCodes.get(session);
-  
+
+  // Verificar se está conectado
+  if (client) {
+    try {
+      const isConnected = await client.isConnected();
+      if (isConnected) {
+        console.log(`✅ Session ${session} is already connected`);
+        return res.json({
+          success: true,
+          session,
+          connected: true,
+          status: 'connected',
+          qrCode: null,
+          message: 'Session already connected'
+        });
+      }
+    } catch (err) {
+      console.error(`Error checking connection status: ${err.message}`);
+    }
+  }
+
   if (!qrCode) {
-    return res.status(404).json({ 
+    console.log(`⚠️ QR code not available for session: ${session}`);
+    return res.status(404).json({
       success: false,
       error: 'QR Code not available',
-      message: 'Session may be connected or not started'
+      message: 'Session may be connected or not started',
+      connected: false
     });
   }
 
+  console.log(`✅ Returning QR code for session: ${session}`);
   res.json({
     success: true,
     session,
-    qrCode
+    qrCode,
+    connected: false,
+    status: 'qrcode'
   });
 });
 
@@ -343,16 +405,36 @@ app.get('/api/sessions', authenticate, async (req, res) => {
 
 // ==================== SERVIDOR ====================
 
+// Verificar Chromium na inicialização
+const chromiumPath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
+console.log(`\n🔍 Checking Chromium installation...`);
+console.log(`📍 Chromium path: ${chromiumPath}`);
+
+try {
+  if (fs.existsSync(chromiumPath)) {
+    console.log(`✅ Chromium found at ${chromiumPath}`);
+  } else {
+    console.warn(`⚠️  WARNING: Chromium not found at ${chromiumPath}`);
+    console.warn(`⚠️  This may cause errors when creating sessions!`);
+  }
+} catch (err) {
+  console.error(`❌ Error checking Chromium: ${err.message}`);
+}
+
 let isShuttingDown = false;
 
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`\n✅ Server running on port ${PORT}`);
   console.log(`🔑 API Key configured`);
   console.log(`🌐 Ready to accept connections`);
+  console.log(`📦 Node version: ${process.version}`);
+  console.log(`💾 Memory: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB used\n`);
 });
 
-// Timeout maior para o servidor
-server.timeout = 120000; // 2 minutos
+// Timeout maior para o servidor (3 minutos para permitir criação do cliente)
+server.timeout = 180000; // 3 minutos
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
 
 // Graceful shutdown
 const shutdown = async (signal) => {
