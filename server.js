@@ -81,36 +81,66 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
   try {
     console.log(`🚀 Starting session: ${session}`);
 
-    // Verificar se já existe
+    // Verificar se já existe cliente ativo
     if (clients.has(session)) {
       const client = clients.get(session);
       try {
         const isConnected = await client.isConnected();
         console.log(`♻️ Session ${session} already exists, connected: ${isConnected}`);
-        return res.json({
-          success: true,
-          message: 'Session already exists',
-          status: isConnected ? 'connected' : 'qrcode',
-          session,
-          qrCode: qrCodes.get(session) || null
-        });
+
+        if (isConnected) {
+          return res.json({
+            success: true,
+            message: 'Session already connected',
+            status: 'connected',
+            session,
+            qrCode: null
+          });
+        } else if (qrCodes.has(session)) {
+          return res.json({
+            success: true,
+            message: 'Session exists with QR code',
+            status: 'qrcode',
+            session,
+            qrCode: qrCodes.get(session)
+          });
+        }
       } catch (err) {
         // Se der erro ao verificar, remove e recria
-        console.log(`🗑️ Removing stale session: ${session}`);
+        console.log(`🗑️ Removing stale session: ${session} (error: ${err?.message || 'unknown'})`);
+        try {
+          await client.close();
+        } catch (closeErr) {
+          console.log(`⚠️ Error closing stale client: ${closeErr?.message || 'unknown'}`);
+        }
         clients.delete(session);
         qrCodes.delete(session);
+      }
+    }
+
+    // Limpar tokens antigos se existirem (pode estar corrompido)
+    const path = require('path');
+    const tokenPath = path.join(__dirname, 'tokens', session);
+
+    if (fs.existsSync(tokenPath)) {
+      try {
+        console.log(`🧹 Cleaning old tokens for ${session}...`);
+        const files = fs.readdirSync(tokenPath);
+        // Não deletar tudo, apenas verificar se está acessível
+        console.log(`📁 Found ${files.length} files in token directory`);
+      } catch (fsErr) {
+        console.log(`⚠️ Error reading token directory: ${fsErr?.message || 'unknown'}`);
       }
     }
 
     let qrCode = null;
     let sessionStatus = 'initializing';
     let clientCreated = false;
+    let createError = null;
 
     console.log(`📱 Creating WPPConnect client for: ${session}`);
     console.log(`🌍 Environment: NODE_ENV=${process.env.NODE_ENV}`);
     console.log(`🌐 Chromium path: ${process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium'}`);
-
-    // Criar cliente em background e aguardar QR code
     console.log(`⏳ Creating WPPConnect client (this may take 10-20s)...`);
 
     const createClientPromise = wppconnect.create({
@@ -161,7 +191,15 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
         console.log(`✅ Client fully initialized for ${session}`);
       })
       .catch(err => {
-        console.error(`❌ Error creating client for ${session}:`, err.message);
+        // Capturar TODOS os detalhes do erro
+        createError = err;
+        console.error(`❌ Error creating client for ${session}:`);
+        console.error('Error type:', typeof err);
+        console.error('Error value:', err);
+        console.error('Error message:', err?.message || 'no message');
+        console.error('Error stack:', err?.stack || 'no stack');
+        console.error('Error toString:', err ? String(err) : 'err is falsy');
+
         clients.delete(session);
         qrCodes.delete(session);
       });
@@ -172,15 +210,26 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
       const qrTimeout = 30000; // 30 segundos para QR aparecer
       const start = Date.now();
 
-      while (!qrCode && (Date.now() - start) < qrTimeout) {
+      while (!qrCode && !createError && (Date.now() - start) < qrTimeout) {
         await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      // Verificar se houve erro durante a criação
+      if (createError) {
+        console.error(`❌ Client creation failed, aborting`);
+        throw new Error(
+          createError?.message ||
+          createError?.toString?.() ||
+          'Failed to create WhatsApp client - unknown error'
+        );
       }
 
       if (qrCode) {
         console.log(`✅ QR code ready for ${session}, returning to client`);
       } else {
         console.log(`⚠️ QR code not generated within 30s for ${session}`);
-        throw new Error('QR code generation timeout - please try again');
+        console.log(`⚠️ Client created: ${clientCreated}, Has error: ${!!createError}`);
+        throw new Error('QR code generation timeout - the server may be overloaded, please try again');
       }
     }
 
