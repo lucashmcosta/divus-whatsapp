@@ -3,18 +3,30 @@ const wppconnect = require('@wppconnect-team/wppconnect');
 const cors = require('cors');
 const { Pool } = require('pg');
 const fs = require('fs');
-require('dotenv').config();
+
+// Load environment variables
+try {
+  require('dotenv').config();
+} catch (err) {
+  console.log('⚠️  .env file not found (this is OK in production)');
+}
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 const API_KEY = process.env.API_KEY || 'change-me';
+
+// Validate critical configurations
+if (!API_KEY || API_KEY === 'change-me') {
+  console.warn('⚠️  WARNING: API_KEY not set or using default value!');
+  console.warn('⚠️  Please set API_KEY environment variable for security!');
+}
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
 // PostgreSQL Pool (opcional)
-const pool = process.env.DATABASE_URL ? new Pool({
+const pool = (process.env.DATABASE_URL && process.env.DATABASE_URL.trim()) ? new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 }) : null;
@@ -477,19 +489,14 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 // Handle errors
 process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught Exception:', error.message);
+  console.error('Stack trace:', error.stack);
+  console.error('Error type:', typeof error);
+  console.error('Error details:', error);
 });
 
-process.on('unhandledRejection', (reason) => {
-  console.error('❌ Unhandled Rejection:', reason);
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise);
+  console.error('Reason:', reason);
 });
 
 console.log('🚀 WPPConnect Server initialized');
-```
-
-## Configurações no Railway
-
-1. **Adicione estas variáveis de ambiente:**
-```
-API_KEY=sua_chave_aqui
-PORT=8080
-NODE_ENV=production
