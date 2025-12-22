@@ -169,8 +169,43 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
       logQR: false,
       disableWelcome: true,
       updatesLog: false,
-      autoClose: 300000, // 5 minutos - dar tempo para escanear QR
+      autoClose: 0, // Desabilitado - não fechar automaticamente durante SYNCING
       createPathFileToken: true,
+      waitForLogin: true, // Aguardar login completo
+      puppeteerOptions: {
+        // Limitar memória e processos
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--disable-gpu',
+          '--disable-software-rasterizer',
+          '--disable-extensions',
+          // Otimizações de memória para Railway
+          '--single-process',
+          '--no-zygote',
+          '--disable-background-networking',
+          '--disable-default-apps',
+          '--disable-sync',
+          '--disable-translate',
+          '--hide-scrollbars',
+          '--metrics-recording-only',
+          '--mute-audio',
+          '--no-default-browser-check',
+          '--disable-hang-monitor',
+          '--disable-prompt-on-repost',
+          '--disable-client-side-phishing-detection',
+          '--disable-component-update',
+          '--disable-domain-reliability',
+          '--disable-features=AudioServiceOutOfProcess',
+          '--disable-ipc-flooding-protection',
+          '--disable-renderer-backgrounding',
+          '--disable-backgrounding-occluded-windows',
+          '--js-flags=--max-old-space-size=256'
+        ]
+      },
       browserArgs: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -179,7 +214,28 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
         '--no-first-run',
         '--disable-gpu',
         '--disable-software-rasterizer',
-        '--disable-extensions'
+        '--disable-extensions',
+        // Otimizações de memória para Railway
+        '--single-process',
+        '--no-zygote',
+        '--disable-background-networking',
+        '--disable-default-apps',
+        '--disable-sync',
+        '--disable-translate',
+        '--hide-scrollbars',
+        '--metrics-recording-only',
+        '--mute-audio',
+        '--no-default-browser-check',
+        '--disable-hang-monitor',
+        '--disable-prompt-on-repost',
+        '--disable-client-side-phishing-detection',
+        '--disable-component-update',
+        '--disable-domain-reliability',
+        '--disable-features=AudioServiceOutOfProcess',
+        '--disable-ipc-flooding-protection',
+        '--disable-renderer-backgrounding',
+        '--disable-backgrounding-occluded-windows',
+        '--js-flags=--max-old-space-size=256'
       ]
     });
 
