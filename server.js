@@ -498,7 +498,169 @@ app.post('/api/:session/sendText', authenticate, async (req, res) => {
   }
 });
 
-// 6. LISTAR SESSÕES
+// 6. BUSCAR MENSAGENS DE UM CHAT
+app.get('/api/:session/get-messages/:phone', authenticate, async (req, res) => {
+  const { session, phone } = req.params;
+  const { isGroup, includeMe, includeNotifications } = req.query;
+
+  const client = clients.get(session);
+
+  if (!client) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+  }
+
+  try {
+    const isConnected = await client.isConnected();
+
+    if (!isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session not connected'
+      });
+    }
+
+    // Formatar o número do telefone
+    let chatId = phone;
+    if (!phone.includes('@')) {
+      chatId = isGroup === 'true' ? `${phone}@g.us` : `${phone}@c.us`;
+    }
+
+    console.log(`📨 Getting messages from ${chatId} for session ${session}`);
+
+    const messages = await client.getAllMessagesInChat(
+      chatId,
+      includeMe !== 'false',
+      includeNotifications === 'true'
+    );
+
+    res.json({
+      success: true,
+      session,
+      chatId,
+      count: messages?.length || 0,
+      messages: messages || []
+    });
+  } catch (error) {
+    console.error(`Get messages error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 7. CARREGAR E BUSCAR TODAS AS MENSAGENS DE UM CHAT
+app.get('/api/:session/all-messages-in-chat/:phone', authenticate, async (req, res) => {
+  const { session, phone } = req.params;
+  const { isGroup, includeMe, includeNotifications } = req.query;
+
+  const client = clients.get(session);
+
+  if (!client) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+  }
+
+  try {
+    const isConnected = await client.isConnected();
+
+    if (!isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session not connected'
+      });
+    }
+
+    // Formatar o número do telefone
+    let chatId = phone;
+    if (!phone.includes('@')) {
+      chatId = isGroup === 'true' ? `${phone}@g.us` : `${phone}@c.us`;
+    }
+
+    console.log(`📨 Loading all messages from ${chatId} for session ${session}`);
+
+    const messages = await client.loadAndGetAllMessagesInChat(
+      chatId,
+      includeMe !== 'false',
+      includeNotifications === 'true'
+    );
+
+    res.json({
+      success: true,
+      session,
+      chatId,
+      count: messages?.length || 0,
+      messages: messages || []
+    });
+  } catch (error) {
+    console.error(`Load all messages error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 8. CARREGAR MENSAGENS DE UM CHAT (load-messages-in-chat)
+app.get('/api/:session/load-messages-in-chat/:phone', authenticate, async (req, res) => {
+  const { session, phone } = req.params;
+  const { isGroup, includeMe, includeNotifications } = req.query;
+
+  const client = clients.get(session);
+
+  if (!client) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+  }
+
+  try {
+    const isConnected = await client.isConnected();
+
+    if (!isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session not connected'
+      });
+    }
+
+    // Formatar o número do telefone
+    let chatId = phone;
+    if (!phone.includes('@')) {
+      chatId = isGroup === 'true' ? `${phone}@g.us` : `${phone}@c.us`;
+    }
+
+    console.log(`📨 Loading messages from ${chatId} for session ${session}`);
+
+    const messages = await client.loadAndGetAllMessagesInChat(
+      chatId,
+      includeMe !== 'false',
+      includeNotifications === 'true'
+    );
+
+    res.json({
+      success: true,
+      session,
+      chatId,
+      count: messages?.length || 0,
+      messages: messages || []
+    });
+  } catch (error) {
+    console.error(`Load messages error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 9. LISTAR SESSÕES
 app.get('/api/sessions', authenticate, async (req, res) => {
   const sessions = [];
   
