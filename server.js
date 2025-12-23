@@ -31,9 +31,38 @@ const pool = (process.env.DATABASE_URL && process.env.DATABASE_URL.trim()) ? new
   ssl: { rejectUnauthorized: false }
 }) : null;
 
-// Armazenar clientes ativos e QR codes
+// Armazenar clientes ativos, QR codes e webhooks
 const clients = new Map();
 const qrCodes = new Map();
+const webhooks = new Map();
+
+// Função para enviar mensagem para webhook
+async function sendToWebhook(session, data) {
+  const webhookUrl = webhooks.get(session);
+  if (!webhookUrl) return;
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        session,
+        ...data,
+        timestamp: Date.now()
+      })
+    });
+
+    if (!response.ok) {
+      console.error(`❌ Webhook error for ${session}: ${response.status}`);
+    } else {
+      console.log(`✅ Webhook sent for ${session}: ${data.type || 'message'}`);
+    }
+  } catch (error) {
+    console.error(`❌ Webhook failed for ${session}:`, error.message);
+  }
+}
 
 // Auth Middleware
 const authenticate = (req, res, next) => {
@@ -244,12 +273,86 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
       ]
     });
 
+    // Salvar webhook se fornecido
+    if (webhook) {
+      webhooks.set(session, webhook);
+      console.log(`🔗 Webhook registered for ${session}: ${webhook}`);
+    }
+
     // Salvar o cliente quando estiver pronto (em background)
     createClientPromise
       .then(client => {
         clients.set(session, client);
         clientCreated = true;
         console.log(`✅ Client fully initialized for ${session}`);
+
+        // Registrar listener para mensagens recebidas
+        client.onMessage(async (message) => {
+          console.log(`📩 New message for ${session} from ${message.from}: ${message.body?.substring(0, 50) || '[media]'}`);
+
+          await sendToWebhook(session, {
+            type: 'message',
+            event: 'onMessage',
+            message: {
+              id: message.id,
+              from: message.from,
+              to: message.to,
+              body: message.body,
+              type: message.type,
+              timestamp: message.timestamp,
+              isGroupMsg: message.isGroupMsg,
+              sender: message.sender,
+              notifyName: message.notifyName,
+              quotedMsg: message.quotedMsg,
+              mimetype: message.mimetype,
+              caption: message.caption
+            }
+          });
+        });
+
+        // Listener para mensagens enviadas (confirmação)
+        client.onAck(async (ack) => {
+          await sendToWebhook(session, {
+            type: 'ack',
+            event: 'onAck',
+            ack: {
+              id: ack.id,
+              chatId: ack.chatId,
+              status: ack.ack
+            }
+          });
+        });
+
+        // Listener para chamadas de voz/vídeo recebidas
+        client.onIncomingCall(async (call) => {
+          console.log(`📞 Incoming call for ${session} from ${call.peerJid}: ${call.isVideo ? 'VIDEO' : 'AUDIO'}`);
+
+          await sendToWebhook(session, {
+            type: 'call',
+            event: 'onIncomingCall',
+            call: {
+              id: call.id,
+              peerJid: call.peerJid,
+              isVideo: call.isVideo,
+              isGroup: call.isGroup,
+              offerTime: call.offerTime,
+              sender: call.peerJid
+            }
+          });
+        });
+
+        // Listener para mudança de estado da conexão
+        client.onStateChange(async (state) => {
+          console.log(`🔄 State changed for ${session}: ${state}`);
+
+          await sendToWebhook(session, {
+            type: 'state',
+            event: 'onStateChange',
+            state: state
+          });
+        });
+
+        console.log(`👂 All listeners registered for ${session} (messages, calls, state)`);
       })
       .catch(err => {
         // Capturar TODOS os detalhes do erro
@@ -503,7 +606,215 @@ app.post('/api/:session/sendText', authenticate, async (req, res) => {
   }
 });
 
-// 6. BUSCAR MENSAGENS DE UM CHAT
+// 6. ENVIAR IMAGEM
+app.post('/api/:session/send-image', authenticate, async (req, res) => {
+  const { session } = req.params;
+  const { phone, base64, filename, caption } = req.body;
+
+  if (!phone || !base64) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing phone or base64 image'
+    });
+  }
+
+  const client = clients.get(session);
+
+  if (!client) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+  }
+
+  try {
+    const isConnected = await client.isConnected();
+
+    if (!isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session not connected'
+      });
+    }
+
+    const phoneNumber = phone.includes('@') ? phone : `${phone}@c.us`;
+    console.log(`🖼️ Sending image to ${phoneNumber} from ${session}`);
+
+    const result = await client.sendImage(phoneNumber, base64, filename || 'image', caption || '');
+
+    res.json({
+      success: true,
+      result,
+      session,
+      to: phoneNumber,
+      message: 'Image sent successfully'
+    });
+  } catch (error) {
+    console.error(`Send image error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 7. ENVIAR ARQUIVO/DOCUMENTO
+app.post('/api/:session/send-file', authenticate, async (req, res) => {
+  const { session } = req.params;
+  const { phone, base64, filename, caption } = req.body;
+
+  if (!phone || !base64 || !filename) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing phone, base64 or filename'
+    });
+  }
+
+  const client = clients.get(session);
+
+  if (!client) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+  }
+
+  try {
+    const isConnected = await client.isConnected();
+
+    if (!isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session not connected'
+      });
+    }
+
+    const phoneNumber = phone.includes('@') ? phone : `${phone}@c.us`;
+    console.log(`📎 Sending file to ${phoneNumber} from ${session}`);
+
+    const result = await client.sendFile(phoneNumber, base64, filename, caption || '');
+
+    res.json({
+      success: true,
+      result,
+      session,
+      to: phoneNumber,
+      message: 'File sent successfully'
+    });
+  } catch (error) {
+    console.error(`Send file error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 8. ENVIAR ÁUDIO (VOZ)
+app.post('/api/:session/send-voice', authenticate, async (req, res) => {
+  const { session } = req.params;
+  const { phone, base64 } = req.body;
+
+  if (!phone || !base64) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing phone or base64 audio'
+    });
+  }
+
+  const client = clients.get(session);
+
+  if (!client) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+  }
+
+  try {
+    const isConnected = await client.isConnected();
+
+    if (!isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session not connected'
+      });
+    }
+
+    const phoneNumber = phone.includes('@') ? phone : `${phone}@c.us`;
+    console.log(`🎤 Sending voice to ${phoneNumber} from ${session}`);
+
+    const result = await client.sendPtt(phoneNumber, base64);
+
+    res.json({
+      success: true,
+      result,
+      session,
+      to: phoneNumber,
+      message: 'Voice message sent successfully'
+    });
+  } catch (error) {
+    console.error(`Send voice error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 9. ENVIAR VÍDEO
+app.post('/api/:session/send-video', authenticate, async (req, res) => {
+  const { session } = req.params;
+  const { phone, base64, filename, caption } = req.body;
+
+  if (!phone || !base64) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing phone or base64 video'
+    });
+  }
+
+  const client = clients.get(session);
+
+  if (!client) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+  }
+
+  try {
+    const isConnected = await client.isConnected();
+
+    if (!isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session not connected'
+      });
+    }
+
+    const phoneNumber = phone.includes('@') ? phone : `${phone}@c.us`;
+    console.log(`🎬 Sending video to ${phoneNumber} from ${session}`);
+
+    const result = await client.sendVideoAsGif(phoneNumber, base64, filename || 'video', caption || '');
+
+    res.json({
+      success: true,
+      result,
+      session,
+      to: phoneNumber,
+      message: 'Video sent successfully'
+    });
+  } catch (error) {
+    console.error(`Send video error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 10. BUSCAR MENSAGENS DE UM CHAT
 app.get('/api/:session/get-messages/:phone', authenticate, async (req, res) => {
   const { session, phone } = req.params;
   const { isGroup, includeMe, includeNotifications } = req.query;
@@ -665,7 +976,44 @@ app.get('/api/:session/load-messages-in-chat/:phone', authenticate, async (req, 
   }
 });
 
-// 9. LISTAR SESSÕES
+// 9. CONFIGURAR WEBHOOK
+app.post('/api/:session/webhook', authenticate, async (req, res) => {
+  const { session } = req.params;
+  const { url } = req.body;
+
+  if (!url) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing webhook URL'
+    });
+  }
+
+  webhooks.set(session, url);
+  console.log(`🔗 Webhook updated for ${session}: ${url}`);
+
+  res.json({
+    success: true,
+    session,
+    webhook: url,
+    message: 'Webhook configured successfully'
+  });
+});
+
+// 10. REMOVER WEBHOOK
+app.delete('/api/:session/webhook', authenticate, async (req, res) => {
+  const { session } = req.params;
+
+  webhooks.delete(session);
+  console.log(`🔗 Webhook removed for ${session}`);
+
+  res.json({
+    success: true,
+    session,
+    message: 'Webhook removed successfully'
+  });
+});
+
+// 11. LISTAR SESSÕES
 app.get('/api/sessions', authenticate, async (req, res) => {
   const sessions = [];
   
