@@ -814,10 +814,10 @@ app.post('/api/:session/send-video', authenticate, async (req, res) => {
   }
 });
 
-// 10. BUSCAR MENSAGENS DE UM CHAT
+// 10. BUSCAR MENSAGENS DE UM CHAT (com paginação)
 app.get('/api/:session/get-messages/:phone', authenticate, async (req, res) => {
   const { session, phone } = req.params;
-  const { isGroup, includeMe, includeNotifications } = req.query;
+  const { isGroup, includeMe, includeNotifications, count, direction } = req.query;
 
   const client = clients.get(session);
 
@@ -846,11 +846,27 @@ app.get('/api/:session/get-messages/:phone', authenticate, async (req, res) => {
 
     console.log(`📨 Getting messages from ${chatId} for session ${session}`);
 
-    const messages = await client.getAllMessagesInChat(
-      chatId,
-      includeMe !== 'false',
-      includeNotifications === 'true'
-    );
+    // Usar getMessages com opções de paginação
+    const options = {
+      count: parseInt(count) || 100, // Padrão: 100 mensagens
+      direction: direction || 'before', // 'before' para mensagens anteriores
+      includeMe: includeMe !== 'false',
+      includeNotifications: includeNotifications === 'true'
+    };
+
+    let messages;
+    try {
+      // Tentar usar getMessages primeiro (recomendado)
+      messages = await client.getMessages(chatId, options);
+    } catch (e) {
+      console.log(`⚠️ getMessages failed, falling back to getAllMessagesInChat`);
+      // Fallback para getAllMessagesInChat
+      messages = await client.getAllMessagesInChat(
+        chatId,
+        includeMe !== 'false',
+        includeNotifications === 'true'
+      );
+    }
 
     res.json({
       success: true,
