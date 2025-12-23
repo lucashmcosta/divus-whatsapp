@@ -31,9 +31,38 @@ const pool = (process.env.DATABASE_URL && process.env.DATABASE_URL.trim()) ? new
   ssl: { rejectUnauthorized: false }
 }) : null;
 
-// Armazenar clientes ativos e QR codes
+// Armazenar clientes ativos, QR codes e webhooks
 const clients = new Map();
 const qrCodes = new Map();
+const webhooks = new Map();
+
+// Função para enviar mensagem para webhook
+async function sendToWebhook(session, data) {
+  const webhookUrl = webhooks.get(session);
+  if (!webhookUrl) return;
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        session,
+        ...data,
+        timestamp: Date.now()
+      })
+    });
+
+    if (!response.ok) {
+      console.error(`❌ Webhook error for ${session}: ${response.status}`);
+    } else {
+      console.log(`✅ Webhook sent for ${session}: ${data.type || 'message'}`);
+    }
+  } catch (error) {
+    console.error(`❌ Webhook failed for ${session}:`, error.message);
+  }
+}
 
 // Auth Middleware
 const authenticate = (req, res, next) => {
@@ -244,12 +273,57 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
       ]
     });
 
+    // Salvar webhook se fornecido
+    if (webhook) {
+      webhooks.set(session, webhook);
+      console.log(`🔗 Webhook registered for ${session}: ${webhook}`);
+    }
+
     // Salvar o cliente quando estiver pronto (em background)
     createClientPromise
       .then(client => {
         clients.set(session, client);
         clientCreated = true;
         console.log(`✅ Client fully initialized for ${session}`);
+
+        // Registrar listener para mensagens recebidas
+        client.onMessage(async (message) => {
+          console.log(`📩 New message for ${session} from ${message.from}: ${message.body?.substring(0, 50) || '[media]'}`);
+
+          await sendToWebhook(session, {
+            type: 'message',
+            event: 'onMessage',
+            message: {
+              id: message.id,
+              from: message.from,
+              to: message.to,
+              body: message.body,
+              type: message.type,
+              timestamp: message.timestamp,
+              isGroupMsg: message.isGroupMsg,
+              sender: message.sender,
+              notifyName: message.notifyName,
+              quotedMsg: message.quotedMsg,
+              mimetype: message.mimetype,
+              caption: message.caption
+            }
+          });
+        });
+
+        // Listener para mensagens enviadas (confirmação)
+        client.onAck(async (ack) => {
+          await sendToWebhook(session, {
+            type: 'ack',
+            event: 'onAck',
+            ack: {
+              id: ack.id,
+              chatId: ack.chatId,
+              status: ack.ack
+            }
+          });
+        });
+
+        console.log(`👂 Message listeners registered for ${session}`);
       })
       .catch(err => {
         // Capturar TODOS os detalhes do erro
@@ -665,7 +739,44 @@ app.get('/api/:session/load-messages-in-chat/:phone', authenticate, async (req, 
   }
 });
 
-// 9. LISTAR SESSÕES
+// 9. CONFIGURAR WEBHOOK
+app.post('/api/:session/webhook', authenticate, async (req, res) => {
+  const { session } = req.params;
+  const { url } = req.body;
+
+  if (!url) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing webhook URL'
+    });
+  }
+
+  webhooks.set(session, url);
+  console.log(`🔗 Webhook updated for ${session}: ${url}`);
+
+  res.json({
+    success: true,
+    session,
+    webhook: url,
+    message: 'Webhook configured successfully'
+  });
+});
+
+// 10. REMOVER WEBHOOK
+app.delete('/api/:session/webhook', authenticate, async (req, res) => {
+  const { session } = req.params;
+
+  webhooks.delete(session);
+  console.log(`🔗 Webhook removed for ${session}`);
+
+  res.json({
+    success: true,
+    session,
+    message: 'Webhook removed successfully'
+  });
+});
+
+// 11. LISTAR SESSÕES
 app.get('/api/sessions', authenticate, async (req, res) => {
   const sessions = [];
   
