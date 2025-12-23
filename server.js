@@ -323,7 +323,36 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
           });
         });
 
-        console.log(`👂 Message listeners registered for ${session}`);
+        // Listener para chamadas de voz/vídeo recebidas
+        client.onIncomingCall(async (call) => {
+          console.log(`📞 Incoming call for ${session} from ${call.peerJid}: ${call.isVideo ? 'VIDEO' : 'AUDIO'}`);
+
+          await sendToWebhook(session, {
+            type: 'call',
+            event: 'onIncomingCall',
+            call: {
+              id: call.id,
+              peerJid: call.peerJid,
+              isVideo: call.isVideo,
+              isGroup: call.isGroup,
+              offerTime: call.offerTime,
+              sender: call.peerJid
+            }
+          });
+        });
+
+        // Listener para mudança de estado da conexão
+        client.onStateChange(async (state) => {
+          console.log(`🔄 State changed for ${session}: ${state}`);
+
+          await sendToWebhook(session, {
+            type: 'state',
+            event: 'onStateChange',
+            state: state
+          });
+        });
+
+        console.log(`👂 All listeners registered for ${session} (messages, calls, state)`);
       })
       .catch(err => {
         // Capturar TODOS os detalhes do erro
@@ -577,7 +606,215 @@ app.post('/api/:session/sendText', authenticate, async (req, res) => {
   }
 });
 
-// 6. BUSCAR MENSAGENS DE UM CHAT
+// 6. ENVIAR IMAGEM
+app.post('/api/:session/send-image', authenticate, async (req, res) => {
+  const { session } = req.params;
+  const { phone, base64, filename, caption } = req.body;
+
+  if (!phone || !base64) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing phone or base64 image'
+    });
+  }
+
+  const client = clients.get(session);
+
+  if (!client) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+  }
+
+  try {
+    const isConnected = await client.isConnected();
+
+    if (!isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session not connected'
+      });
+    }
+
+    const phoneNumber = phone.includes('@') ? phone : `${phone}@c.us`;
+    console.log(`🖼️ Sending image to ${phoneNumber} from ${session}`);
+
+    const result = await client.sendImage(phoneNumber, base64, filename || 'image', caption || '');
+
+    res.json({
+      success: true,
+      result,
+      session,
+      to: phoneNumber,
+      message: 'Image sent successfully'
+    });
+  } catch (error) {
+    console.error(`Send image error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 7. ENVIAR ARQUIVO/DOCUMENTO
+app.post('/api/:session/send-file', authenticate, async (req, res) => {
+  const { session } = req.params;
+  const { phone, base64, filename, caption } = req.body;
+
+  if (!phone || !base64 || !filename) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing phone, base64 or filename'
+    });
+  }
+
+  const client = clients.get(session);
+
+  if (!client) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+  }
+
+  try {
+    const isConnected = await client.isConnected();
+
+    if (!isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session not connected'
+      });
+    }
+
+    const phoneNumber = phone.includes('@') ? phone : `${phone}@c.us`;
+    console.log(`📎 Sending file to ${phoneNumber} from ${session}`);
+
+    const result = await client.sendFile(phoneNumber, base64, filename, caption || '');
+
+    res.json({
+      success: true,
+      result,
+      session,
+      to: phoneNumber,
+      message: 'File sent successfully'
+    });
+  } catch (error) {
+    console.error(`Send file error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 8. ENVIAR ÁUDIO (VOZ)
+app.post('/api/:session/send-voice', authenticate, async (req, res) => {
+  const { session } = req.params;
+  const { phone, base64 } = req.body;
+
+  if (!phone || !base64) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing phone or base64 audio'
+    });
+  }
+
+  const client = clients.get(session);
+
+  if (!client) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+  }
+
+  try {
+    const isConnected = await client.isConnected();
+
+    if (!isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session not connected'
+      });
+    }
+
+    const phoneNumber = phone.includes('@') ? phone : `${phone}@c.us`;
+    console.log(`🎤 Sending voice to ${phoneNumber} from ${session}`);
+
+    const result = await client.sendPtt(phoneNumber, base64);
+
+    res.json({
+      success: true,
+      result,
+      session,
+      to: phoneNumber,
+      message: 'Voice message sent successfully'
+    });
+  } catch (error) {
+    console.error(`Send voice error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 9. ENVIAR VÍDEO
+app.post('/api/:session/send-video', authenticate, async (req, res) => {
+  const { session } = req.params;
+  const { phone, base64, filename, caption } = req.body;
+
+  if (!phone || !base64) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing phone or base64 video'
+    });
+  }
+
+  const client = clients.get(session);
+
+  if (!client) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+  }
+
+  try {
+    const isConnected = await client.isConnected();
+
+    if (!isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session not connected'
+      });
+    }
+
+    const phoneNumber = phone.includes('@') ? phone : `${phone}@c.us`;
+    console.log(`🎬 Sending video to ${phoneNumber} from ${session}`);
+
+    const result = await client.sendVideoAsGif(phoneNumber, base64, filename || 'video', caption || '');
+
+    res.json({
+      success: true,
+      result,
+      session,
+      to: phoneNumber,
+      message: 'Video sent successfully'
+    });
+  } catch (error) {
+    console.error(`Send video error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 10. BUSCAR MENSAGENS DE UM CHAT
 app.get('/api/:session/get-messages/:phone', authenticate, async (req, res) => {
   const { session, phone } = req.params;
   const { isGroup, includeMe, includeNotifications } = req.query;
