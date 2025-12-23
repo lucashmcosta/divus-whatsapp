@@ -172,6 +172,11 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
       autoClose: 0, // Desabilitado - não fechar automaticamente durante SYNCING
       createPathFileToken: true,
       waitForLogin: true, // Aguardar login completo
+      // Desabilitar Phone Watchdog para evitar "Phone not connected" durante SYNCING
+      phoneAutoClose: 0,
+      checkTimeout: 60000, // Aumentar timeout de verificação para 60s
+      // Desabilitar verificações que podem causar desconexão prematura
+      linkPreviewApiServers: null,
       puppeteerOptions: {
         // Limitar memória e processos
         args: [
