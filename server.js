@@ -482,11 +482,14 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
 
     // Aguardar APENAS o QR code (não o cliente completo)
     if (waitQrCode) {
-      console.log(`⏳ Waiting for QR code generation (up to 30s)...`);
+      console.log(`⏳ Waiting for QR code or connection (up to 30s)...`);
       const qrTimeout = 30000; // 30 segundos para QR aparecer
       const start = Date.now();
 
-      while (!qrCode && !createError && (Date.now() - start) < qrTimeout) {
+      // Estados que indicam que já conectou (não precisa de QR)
+      const connectedStates = ['connected', 'inChat', 'authenticated', 'isLogged', 'qrReadSuccess', 'chatsAvailable'];
+
+      while (!qrCode && !createError && !connectedStates.includes(sessionStatus) && (Date.now() - start) < qrTimeout) {
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
@@ -500,11 +503,34 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
         );
       }
 
+      // Verificar se já conectou (sessão restaurada de tokens salvos)
+      if (connectedStates.includes(sessionStatus)) {
+        console.log(`✅ Session ${session} already connected (restored from saved tokens)`);
+
+        // Obter número do telefone se o cliente já está pronto
+        let phoneNumber = null;
+        if (clientCreated && clients.has(session)) {
+          const client = clients.get(session);
+          phoneNumber = await getPhoneNumber(client);
+        }
+
+        return res.json({
+          success: true,
+          session,
+          qrCode: null,
+          status: 'connected',
+          connected: true,
+          phoneNumber,
+          message: 'Session restored - already connected',
+          webhook: webhook || null
+        });
+      }
+
       if (qrCode) {
         console.log(`✅ QR code ready for ${session}, returning to client`);
       } else {
         console.log(`⚠️ QR code not generated within 30s for ${session}`);
-        console.log(`⚠️ Client created: ${clientCreated}, Has error: ${!!createError}`);
+        console.log(`⚠️ Client created: ${clientCreated}, Has error: ${!!createError}, Status: ${sessionStatus}`);
         throw new Error('QR code generation timeout - the server may be overloaded, please try again');
       }
     }
