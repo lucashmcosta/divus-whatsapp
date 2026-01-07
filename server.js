@@ -57,32 +57,50 @@ const clients = new Map();
 const qrCodes = new Map();
 const webhooks = new Map();
 
-// Função para enviar mensagem para webhook
-async function sendToWebhook(session, data) {
+// Função para enviar mensagem para webhook com retry
+async function sendToWebhook(session, data, retries = 3) {
   const webhookUrl = webhooks.get(session);
   if (!webhookUrl) return;
 
-  try {
-    const response = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        session,
-        ...data,
-        timestamp: Date.now()
-      })
-    });
+  const payload = JSON.stringify({
+    session,
+    ...data,
+    timestamp: Date.now()
+  });
 
-    if (!response.ok) {
-      console.error(`❌ Webhook error for ${session}: ${response.status}`);
-    } else {
-      console.log(`✅ Webhook sent for ${session}: ${data.type || 'message'}`);
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: payload,
+        signal: controller.signal
+      });
+
+      clearTimeout(timeout);
+
+      if (response.ok) {
+        console.log(`✅ Webhook sent for ${session}: ${data.type || 'message'}`);
+        return; // Sucesso, sair
+      }
+
+      console.error(`❌ Webhook error for ${session}: ${response.status} (attempt ${attempt}/${retries})`);
+    } catch (error) {
+      console.error(`❌ Webhook failed for ${session}: ${error.message} (attempt ${attempt}/${retries})`);
     }
-  } catch (error) {
-    console.error(`❌ Webhook failed for ${session}:`, error.message);
+
+    // Aguardar antes de retry (backoff exponencial: 1s, 2s, 4s)
+    if (attempt < retries) {
+      await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt - 1)));
+    }
   }
+
+  console.error(`❌ Webhook permanently failed for ${session} after ${retries} attempts`);
 }
 
 // Auth Middleware
