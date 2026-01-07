@@ -196,19 +196,31 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
         const files = fs.readdirSync(tokenPath);
         console.log(`📁 Found ${files.length} files in token directory`);
 
-        // Remover arquivos de lock do Chromium que podem ter ficado de containers anteriores
-        const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
-        for (const lockFile of lockFiles) {
-          const lockPath = path.join(tokenPath, lockFile);
-          if (fs.existsSync(lockPath)) {
-            try {
-              fs.unlinkSync(lockPath);
-              console.log(`🔓 Removed stale lock file: ${lockFile}`);
-            } catch (unlinkErr) {
-              console.log(`⚠️ Could not remove lock file ${lockFile}: ${unlinkErr.message}`);
+        // Remover arquivos de lock do Chromium RECURSIVAMENTE em todas as subpastas
+        const lockFileNames = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+
+        function removeLockFilesRecursive(dir) {
+          try {
+            const entries = fs.readdirSync(dir, { withFileTypes: true });
+            for (const entry of entries) {
+              const fullPath = path.join(dir, entry.name);
+              if (entry.isDirectory()) {
+                removeLockFilesRecursive(fullPath);
+              } else if (lockFileNames.includes(entry.name)) {
+                try {
+                  fs.unlinkSync(fullPath);
+                  console.log(`🔓 Removed stale lock file: ${fullPath}`);
+                } catch (unlinkErr) {
+                  console.log(`⚠️ Could not remove lock file ${fullPath}: ${unlinkErr.message}`);
+                }
+              }
             }
+          } catch (err) {
+            console.log(`⚠️ Error scanning directory ${dir}: ${err.message}`);
           }
         }
+
+        removeLockFilesRecursive(tokenPath);
       } catch (fsErr) {
         console.log(`⚠️ Error reading token directory: ${fsErr?.message || 'unknown'}`);
       }
