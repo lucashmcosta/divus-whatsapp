@@ -566,9 +566,11 @@ app.get('/api/:session/qrcode', authenticate, async (req, res) => {
     return res.status(404).json({
       success: false,
       error: 'QR Code not available',
-      message: 'Session may be connected or not started',
+      message: 'Session not started or expired. Please reconnect.',
       connected: false,
-      status: currentState || 'unknown'
+      status: currentState || 'disconnected',
+      sessionExpired: true,
+      needsReconnect: true
     });
   }
 
