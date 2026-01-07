@@ -57,32 +57,50 @@ const clients = new Map();
 const qrCodes = new Map();
 const webhooks = new Map();
 
-// Função para enviar mensagem para webhook
-async function sendToWebhook(session, data) {
+// Função para enviar mensagem para webhook com retry
+async function sendToWebhook(session, data, retries = 3) {
   const webhookUrl = webhooks.get(session);
   if (!webhookUrl) return;
 
-  try {
-    const response = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        session,
-        ...data,
-        timestamp: Date.now()
-      })
-    });
+  const payload = JSON.stringify({
+    session,
+    ...data,
+    timestamp: Date.now()
+  });
 
-    if (!response.ok) {
-      console.error(`❌ Webhook error for ${session}: ${response.status}`);
-    } else {
-      console.log(`✅ Webhook sent for ${session}: ${data.type || 'message'}`);
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: payload,
+        signal: controller.signal
+      });
+
+      clearTimeout(timeout);
+
+      if (response.ok) {
+        console.log(`✅ Webhook sent for ${session}: ${data.type || 'message'}`);
+        return; // Sucesso, sair
+      }
+
+      console.error(`❌ Webhook error for ${session}: ${response.status} (attempt ${attempt}/${retries})`);
+    } catch (error) {
+      console.error(`❌ Webhook failed for ${session}: ${error.message} (attempt ${attempt}/${retries})`);
     }
-  } catch (error) {
-    console.error(`❌ Webhook failed for ${session}:`, error.message);
+
+    // Aguardar antes de retry (backoff exponencial: 1s, 2s, 4s)
+    if (attempt < retries) {
+      await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt - 1)));
+    }
   }
+
+  console.error(`❌ Webhook permanently failed for ${session} after ${retries} attempts`);
 }
 
 // Auth Middleware
@@ -995,6 +1013,99 @@ app.get('/api/:session/load-messages-in-chat/:phone', authenticate, async (req, 
     });
   } catch (error) {
     console.error(`Load messages error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 13. CARREGAR HISTÓRICO COMPLETO (inclui mensagens antigas)
+app.get('/api/:session/full-history/:phone', authenticate, async (req, res) => {
+  const { session, phone } = req.params;
+  const { isGroup, includeMe, includeNotifications, maxIterations } = req.query;
+
+  const client = clients.get(session);
+
+  if (!client) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+  }
+
+  try {
+    const isConnected = await client.isConnected();
+
+    if (!isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session not connected'
+      });
+    }
+
+    // Formatar o número do telefone
+    let chatId = phone;
+    if (!phone.includes('@')) {
+      chatId = isGroup === 'true' ? `${phone}@g.us` : `${phone}@c.us`;
+    }
+
+    console.log(`📜 Loading FULL history from ${chatId} for session ${session}`);
+
+    // Número máximo de iterações para evitar loop infinito (padrão: 100)
+    const iterations = Math.min(parseInt(maxIterations) || 100, 1000);
+    let previousCount = 0;
+    let currentCount = 0;
+    let loadedIterations = 0;
+
+    // Carregar mensagens anteriores iterativamente
+    for (let i = 0; i < iterations; i++) {
+      try {
+        // Carregar mais mensagens antigas
+        await client.loadEarlierMessages(chatId);
+        loadedIterations++;
+
+        // Verificar quantas mensagens temos agora
+        const messages = await client.getAllMessagesInChat(chatId, true, false);
+        currentCount = messages?.length || 0;
+
+        console.log(`📜 Iteration ${i + 1}: ${currentCount} messages loaded`);
+
+        // Se não carregou mais mensagens, chegamos ao início do histórico
+        if (currentCount === previousCount) {
+          console.log(`📜 Reached beginning of history at iteration ${i + 1}`);
+          break;
+        }
+
+        previousCount = currentCount;
+
+        // Pequena pausa para não sobrecarregar
+        await new Promise(resolve => setTimeout(resolve, 200));
+      } catch (loadErr) {
+        console.log(`⚠️ Error loading earlier messages at iteration ${i + 1}: ${loadErr.message}`);
+        break;
+      }
+    }
+
+    // Buscar todas as mensagens carregadas
+    const allMessages = await client.getAllMessagesInChat(
+      chatId,
+      includeMe !== 'false',
+      includeNotifications === 'true'
+    );
+
+    console.log(`✅ Full history loaded: ${allMessages?.length || 0} messages in ${loadedIterations} iterations`);
+
+    res.json({
+      success: true,
+      session,
+      chatId,
+      count: allMessages?.length || 0,
+      iterations: loadedIterations,
+      messages: allMessages || []
+    });
+  } catch (error) {
+    console.error(`Full history error:`, error.message);
     res.status(500).json({
       success: false,
       error: error.message
