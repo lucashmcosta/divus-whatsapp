@@ -62,25 +62,65 @@ const sessionStates = new Map(); // Rastrear estado atual de cada sessão (SYNCI
 async function getPhoneNumber(client) {
   try {
     const hostDevice = await client.getHostDevice();
-    if (hostDevice && hostDevice.wid) {
-      // O wid vem no formato "5511999999999@c.us"
-      const number = hostDevice.wid.user || hostDevice.wid._serialized?.split('@')[0];
-      if (number) {
-        // Formatar como +55 11 99999-9999
-        const cleaned = number.replace(/\D/g, '');
-        if (cleaned.length >= 10) {
-          const countryCode = cleaned.slice(0, 2);
-          const areaCode = cleaned.slice(2, 4);
-          const firstPart = cleaned.slice(4, cleaned.length - 4);
-          const lastPart = cleaned.slice(-4);
-          return `+${countryCode} ${areaCode} ${firstPart}-${lastPart}`;
-        }
-        return `+${cleaned}`;
-      }
+    console.log('📱 Host device raw:', JSON.stringify(hostDevice, null, 2));
+
+    if (!hostDevice) {
+      console.log('⚠️ getHostDevice returned null/undefined');
+      return null;
     }
-    return null;
+
+    // Tentar múltiplos caminhos para encontrar o número
+    let number = null;
+
+    // Caminho 1: hostDevice.wid.user
+    if (hostDevice.wid?.user) {
+      number = hostDevice.wid.user;
+      console.log('📱 Found number in wid.user:', number);
+    }
+    // Caminho 2: hostDevice.wid._serialized
+    else if (hostDevice.wid?._serialized) {
+      number = hostDevice.wid._serialized.split('@')[0];
+      console.log('📱 Found number in wid._serialized:', number);
+    }
+    // Caminho 3: hostDevice.id.user (formato alternativo)
+    else if (hostDevice.id?.user) {
+      number = hostDevice.id.user;
+      console.log('📱 Found number in id.user:', number);
+    }
+    // Caminho 4: hostDevice.id._serialized
+    else if (hostDevice.id?._serialized) {
+      number = hostDevice.id._serialized.split('@')[0];
+      console.log('📱 Found number in id._serialized:', number);
+    }
+    // Caminho 5: hostDevice.phone ou hostDevice.phoneNumber
+    else if (hostDevice.phone) {
+      number = hostDevice.phone;
+      console.log('📱 Found number in phone:', number);
+    }
+    else if (hostDevice.phoneNumber) {
+      number = hostDevice.phoneNumber;
+      console.log('📱 Found number in phoneNumber:', number);
+    }
+
+    if (!number) {
+      console.log('⚠️ Could not find phone number in hostDevice');
+      return null;
+    }
+
+    // Formatar o número
+    const cleaned = number.replace(/\D/g, '');
+    if (cleaned.length >= 10) {
+      const countryCode = cleaned.slice(0, 2);
+      const areaCode = cleaned.slice(2, 4);
+      const firstPart = cleaned.slice(4, cleaned.length - 4);
+      const lastPart = cleaned.slice(-4);
+      const formatted = `+${countryCode} ${areaCode} ${firstPart}-${lastPart}`;
+      console.log('📱 Formatted phone number:', formatted);
+      return formatted;
+    }
+    return `+${cleaned}`;
   } catch (err) {
-    console.error('Error getting phone number:', err.message);
+    console.error('❌ Error getting phone number:', err.message);
     return null;
   }
 }
