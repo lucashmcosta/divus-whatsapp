@@ -195,6 +195,20 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
         console.log(`📁 Found existing session data for ${session} in ${tokenPath}`);
         const files = fs.readdirSync(tokenPath);
         console.log(`📁 Found ${files.length} files in token directory`);
+
+        // Remover arquivos de lock do Chromium que podem ter ficado de containers anteriores
+        const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+        for (const lockFile of lockFiles) {
+          const lockPath = path.join(tokenPath, lockFile);
+          if (fs.existsSync(lockPath)) {
+            try {
+              fs.unlinkSync(lockPath);
+              console.log(`🔓 Removed stale lock file: ${lockFile}`);
+            } catch (unlinkErr) {
+              console.log(`⚠️ Could not remove lock file ${lockFile}: ${unlinkErr.message}`);
+            }
+          }
+        }
       } catch (fsErr) {
         console.log(`⚠️ Error reading token directory: ${fsErr?.message || 'unknown'}`);
       }
