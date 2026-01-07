@@ -61,68 +61,78 @@ const sessionStates = new Map(); // Rastrear estado atual de cada sessão (SYNCI
 // Função helper para obter número do telefone conectado
 async function getPhoneNumber(client) {
   try {
-    const hostDevice = await client.getHostDevice();
-    console.log('📱 Host device raw:', JSON.stringify(hostDevice, null, 2));
-
-    if (!hostDevice) {
-      console.log('⚠️ getHostDevice returned null/undefined');
-      return null;
+    // Método 1: getWid() - retorna o WhatsApp ID diretamente
+    try {
+      const wid = await client.getWid();
+      console.log('📱 getWid() result:', JSON.stringify(wid));
+      if (wid) {
+        const number = typeof wid === 'string'
+          ? wid.split('@')[0]
+          : (wid.user || wid._serialized?.split('@')[0]);
+        if (number && number.length > 5) {
+          return formatPhoneNumber(number);
+        }
+      }
+    } catch (e) {
+      console.log('⚠️ getWid() failed:', e.message);
     }
 
-    // Tentar múltiplos caminhos para encontrar o número
-    let number = null;
-
-    // Caminho 1: hostDevice.wid.user
-    if (hostDevice.wid?.user) {
-      number = hostDevice.wid.user;
-      console.log('📱 Found number in wid.user:', number);
-    }
-    // Caminho 2: hostDevice.wid._serialized
-    else if (hostDevice.wid?._serialized) {
-      number = hostDevice.wid._serialized.split('@')[0];
-      console.log('📱 Found number in wid._serialized:', number);
-    }
-    // Caminho 3: hostDevice.id.user (formato alternativo)
-    else if (hostDevice.id?.user) {
-      number = hostDevice.id.user;
-      console.log('📱 Found number in id.user:', number);
-    }
-    // Caminho 4: hostDevice.id._serialized
-    else if (hostDevice.id?._serialized) {
-      number = hostDevice.id._serialized.split('@')[0];
-      console.log('📱 Found number in id._serialized:', number);
-    }
-    // Caminho 5: hostDevice.phone ou hostDevice.phoneNumber
-    else if (hostDevice.phone) {
-      number = hostDevice.phone;
-      console.log('📱 Found number in phone:', number);
-    }
-    else if (hostDevice.phoneNumber) {
-      number = hostDevice.phoneNumber;
-      console.log('📱 Found number in phoneNumber:', number);
+    // Método 2: getMe() - retorna informações do usuário
+    try {
+      const me = await client.getMe();
+      console.log('📱 getMe() result:', JSON.stringify(me));
+      if (me) {
+        const number = me.wid?.user || me.wid?._serialized?.split('@')[0] ||
+                       me.id?.user || me.id?._serialized?.split('@')[0] ||
+                       me.phone || me.phoneNumber;
+        if (number && number.length > 5) {
+          return formatPhoneNumber(number);
+        }
+      }
+    } catch (e) {
+      console.log('⚠️ getMe() failed:', e.message);
     }
 
-    if (!number) {
-      console.log('⚠️ Could not find phone number in hostDevice');
-      return null;
+    // Método 3: getHostDevice() como fallback
+    try {
+      const hostDevice = await client.getHostDevice();
+      console.log('📱 getHostDevice() result:', JSON.stringify(hostDevice));
+      if (hostDevice) {
+        // Tentar múltiplos caminhos
+        const number = hostDevice.wid?.user || hostDevice.wid?._serialized?.split('@')[0] ||
+                       hostDevice.id?.user || hostDevice.id?._serialized?.split('@')[0] ||
+                       hostDevice.phone || hostDevice.phoneNumber;
+        if (number && number.length > 5) {
+          return formatPhoneNumber(number);
+        }
+      }
+    } catch (e) {
+      console.log('⚠️ getHostDevice() failed:', e.message);
     }
 
-    // Formatar o número
-    const cleaned = number.replace(/\D/g, '');
-    if (cleaned.length >= 10) {
-      const countryCode = cleaned.slice(0, 2);
-      const areaCode = cleaned.slice(2, 4);
-      const firstPart = cleaned.slice(4, cleaned.length - 4);
-      const lastPart = cleaned.slice(-4);
-      const formatted = `+${countryCode} ${areaCode} ${firstPart}-${lastPart}`;
-      console.log('📱 Formatted phone number:', formatted);
-      return formatted;
-    }
-    return `+${cleaned}`;
+    console.log('⚠️ Could not find phone number with any method');
+    return null;
   } catch (err) {
     console.error('❌ Error getting phone number:', err.message);
     return null;
   }
+}
+
+// Formatar número de telefone
+function formatPhoneNumber(number) {
+  const cleaned = String(number).replace(/\D/g, '');
+  console.log('📱 Formatting number:', cleaned);
+
+  if (cleaned.length >= 10) {
+    const countryCode = cleaned.slice(0, 2);
+    const areaCode = cleaned.slice(2, 4);
+    const firstPart = cleaned.slice(4, cleaned.length - 4);
+    const lastPart = cleaned.slice(-4);
+    const formatted = `+${countryCode} ${areaCode} ${firstPart}-${lastPart}`;
+    console.log('📱 Formatted phone number:', formatted);
+    return formatted;
+  }
+  return `+${cleaned}`;
 }
 
 // Função para enviar mensagem para webhook com retry
