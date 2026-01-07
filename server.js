@@ -1083,6 +1083,20 @@ app.get('/api/:session/full-history/:phone', authenticate, async (req, res) => {
     let previousCount = 0;
     let currentCount = 0;
     let loadedIterations = 0;
+    let loadError = null;
+
+    // Primeiro, verificar se o chat existe e tentar abrir
+    try {
+      // Tentar obter o chat primeiro para garantir que está carregado
+      const chat = await client.getChatById(chatId);
+      if (!chat) {
+        console.log(`⚠️ Chat ${chatId} not found, trying to get messages directly`);
+      } else {
+        console.log(`✅ Chat ${chatId} found, loading history...`);
+      }
+    } catch (chatErr) {
+      console.log(`⚠️ Could not get chat ${chatId}: ${chatErr.message}`);
+    }
 
     // Carregar mensagens anteriores iterativamente
     for (let i = 0; i < iterations; i++) {
@@ -1108,8 +1122,13 @@ app.get('/api/:session/full-history/:phone', authenticate, async (req, res) => {
         // Pequena pausa para não sobrecarregar
         await new Promise(resolve => setTimeout(resolve, 200));
       } catch (loadErr) {
+        loadError = loadErr.message;
         console.log(`⚠️ Error loading earlier messages at iteration ${i + 1}: ${loadErr.message}`);
-        break;
+        // Para alguns erros, não adianta tentar novamente
+        if (loadErr.message.includes('is not a function') || loadErr.message.includes('not found')) {
+          console.log(`📜 Chat may be new or not fully synced, will return available messages`);
+          break;
+        }
       }
     }
 
@@ -1120,15 +1139,18 @@ app.get('/api/:session/full-history/:phone', authenticate, async (req, res) => {
       includeNotifications === 'true'
     );
 
-    console.log(`✅ Full history loaded: ${allMessages?.length || 0} messages in ${loadedIterations} iterations`);
+    const messageCount = allMessages?.length || 0;
+    console.log(`✅ Full history loaded: ${messageCount} messages in ${loadedIterations} iterations`);
 
     res.json({
       success: true,
       session,
       chatId,
-      count: allMessages?.length || 0,
+      count: messageCount,
       iterations: loadedIterations,
-      messages: allMessages || []
+      messages: allMessages || [],
+      warning: loadError ? `Could not load full history: ${loadError}. Chat may be new or not fully synced.` : null,
+      partial: loadError ? true : false
     });
   } catch (error) {
     console.error(`Full history error:`, error.message);
