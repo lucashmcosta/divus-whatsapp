@@ -3,12 +3,33 @@ const wppconnect = require('@wppconnect-team/wppconnect');
 const cors = require('cors');
 const { Pool } = require('pg');
 const fs = require('fs');
+const path = require('path');
 
 // Load environment variables
 try {
   require('dotenv').config();
 } catch (err) {
   console.log('⚠️  .env file not found (this is OK in production)');
+}
+
+// Configuração do diretório de sessões persistentes (Railway Volume)
+const VOLUME_BASE = process.env.RAILWAY_VOLUME_MOUNT_PATH || '/data';
+const SESSION_DIR = path.join(VOLUME_BASE, 'wpp-tokens');
+
+// Garantir que o diretório de sessões exista
+try {
+  if (!fs.existsSync(SESSION_DIR)) {
+    fs.mkdirSync(SESSION_DIR, { recursive: true });
+    console.log(`📁 Created session directory: ${SESSION_DIR}`);
+  } else {
+    console.log(`📁 Session directory exists: ${SESSION_DIR}`);
+  }
+  // Verificar permissões de escrita
+  fs.accessSync(SESSION_DIR, fs.constants.W_OK);
+  console.log(`✅ Session directory is writable`);
+} catch (err) {
+  console.error(`❌ Error setting up session directory: ${err.message}`);
+  console.error(`⚠️  Sessions may not persist across restarts!`);
 }
 
 const app = express();
@@ -98,7 +119,8 @@ app.get('/health', (req, res) => {
       used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
       total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
     },
-    chromium_path: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium'
+    chromium_path: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+    session_storage: SESSION_DIR
   });
 });
 
@@ -147,19 +169,19 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
       }
     }
 
-    // Limpar tokens antigos se existirem (pode estar corrompido)
-    const path = require('path');
-    const tokenPath = path.join(__dirname, 'tokens', session);
+    // Verificar tokens existentes no diretório persistente
+    const tokenPath = path.join(SESSION_DIR, session);
 
     if (fs.existsSync(tokenPath)) {
       try {
-        console.log(`🧹 Cleaning old tokens for ${session}...`);
+        console.log(`📁 Found existing session data for ${session} in ${tokenPath}`);
         const files = fs.readdirSync(tokenPath);
-        // Não deletar tudo, apenas verificar se está acessível
         console.log(`📁 Found ${files.length} files in token directory`);
       } catch (fsErr) {
         console.log(`⚠️ Error reading token directory: ${fsErr?.message || 'unknown'}`);
       }
+    } else {
+      console.log(`📁 No existing session data for ${session}, will create new`);
     }
 
     let qrCode = null;
@@ -174,6 +196,7 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
 
     const createClientPromise = wppconnect.create({
       session: session,
+      folderNameToken: SESSION_DIR, // Salvar tokens no volume persistente
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
       catchQR: (base64Qr) => {
         qrCode = base64Qr;
@@ -1069,7 +1092,8 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`🔑 API Key configured`);
   console.log(`🌐 Ready to accept connections`);
   console.log(`📦 Node version: ${process.version}`);
-  console.log(`💾 Memory: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB used\n`);
+  console.log(`💾 Memory: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB used`);
+  console.log(`📂 Session storage: ${SESSION_DIR}\n`);
 });
 
 // Timeout maior para o servidor (3 minutos para permitir criação do cliente)
