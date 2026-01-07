@@ -1052,8 +1052,8 @@ app.get('/api/:session/full-history/:phone', authenticate, async (req, res) => {
 
     console.log(`📜 Loading FULL history from ${chatId} for session ${session}`);
 
-    // Número máximo de iterações para evitar loop infinito (padrão: 50)
-    const iterations = Math.min(parseInt(maxIterations) || 50, 100);
+    // Número máximo de iterações para evitar loop infinito (padrão: 100)
+    const iterations = Math.min(parseInt(maxIterations) || 100, 1000);
     let previousCount = 0;
     let currentCount = 0;
     let loadedIterations = 0;
