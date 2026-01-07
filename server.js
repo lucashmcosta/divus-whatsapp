@@ -1020,6 +1020,99 @@ app.get('/api/:session/load-messages-in-chat/:phone', authenticate, async (req, 
   }
 });
 
+// 13. CARREGAR HISTÓRICO COMPLETO (inclui mensagens antigas)
+app.get('/api/:session/full-history/:phone', authenticate, async (req, res) => {
+  const { session, phone } = req.params;
+  const { isGroup, includeMe, includeNotifications, maxIterations } = req.query;
+
+  const client = clients.get(session);
+
+  if (!client) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found'
+    });
+  }
+
+  try {
+    const isConnected = await client.isConnected();
+
+    if (!isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session not connected'
+      });
+    }
+
+    // Formatar o número do telefone
+    let chatId = phone;
+    if (!phone.includes('@')) {
+      chatId = isGroup === 'true' ? `${phone}@g.us` : `${phone}@c.us`;
+    }
+
+    console.log(`📜 Loading FULL history from ${chatId} for session ${session}`);
+
+    // Número máximo de iterações para evitar loop infinito (padrão: 50)
+    const iterations = Math.min(parseInt(maxIterations) || 50, 100);
+    let previousCount = 0;
+    let currentCount = 0;
+    let loadedIterations = 0;
+
+    // Carregar mensagens anteriores iterativamente
+    for (let i = 0; i < iterations; i++) {
+      try {
+        // Carregar mais mensagens antigas
+        await client.loadEarlierMessages(chatId);
+        loadedIterations++;
+
+        // Verificar quantas mensagens temos agora
+        const messages = await client.getAllMessagesInChat(chatId, true, false);
+        currentCount = messages?.length || 0;
+
+        console.log(`📜 Iteration ${i + 1}: ${currentCount} messages loaded`);
+
+        // Se não carregou mais mensagens, chegamos ao início do histórico
+        if (currentCount === previousCount) {
+          console.log(`📜 Reached beginning of history at iteration ${i + 1}`);
+          break;
+        }
+
+        previousCount = currentCount;
+
+        // Pequena pausa para não sobrecarregar
+        await new Promise(resolve => setTimeout(resolve, 200));
+      } catch (loadErr) {
+        console.log(`⚠️ Error loading earlier messages at iteration ${i + 1}: ${loadErr.message}`);
+        break;
+      }
+    }
+
+    // Buscar todas as mensagens carregadas
+    const allMessages = await client.getAllMessagesInChat(
+      chatId,
+      includeMe !== 'false',
+      includeNotifications === 'true'
+    );
+
+    console.log(`✅ Full history loaded: ${allMessages?.length || 0} messages in ${loadedIterations} iterations`);
+
+    res.json({
+      success: true,
+      session,
+      chatId,
+      count: allMessages?.length || 0,
+      iterations: loadedIterations,
+      messages: allMessages || []
+    });
+  } catch (error) {
+    console.error(`Full history error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // 9. CONFIGURAR WEBHOOK
 app.post('/api/:session/webhook', authenticate, async (req, res) => {
   const { session } = req.params;
