@@ -52,10 +52,11 @@ const pool = (process.env.DATABASE_URL && process.env.DATABASE_URL.trim()) ? new
   ssl: { rejectUnauthorized: false }
 }) : null;
 
-// Armazenar clientes ativos, QR codes e webhooks
+// Armazenar clientes ativos, QR codes, webhooks e estados das sessões
 const clients = new Map();
 const qrCodes = new Map();
 const webhooks = new Map();
+const sessionStates = new Map(); // Rastrear estado atual de cada sessão (SYNCING, CONNECTED, etc.)
 
 // Função para enviar mensagem para webhook com retry
 async function sendToWebhook(session, data, retries = 3) {
@@ -184,6 +185,7 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
         }
         clients.delete(session);
         qrCodes.delete(session);
+        sessionStates.delete(session);
       }
     }
 
@@ -251,11 +253,16 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
       statusFind: (status) => {
         console.log(`📊 ${session} status changed: ${status}`);
         sessionStatus = status;
+        sessionStates.set(session, status);
 
-        if (status === 'authenticated' || status === 'isLogged') {
+        // Estados que indicam que o QR já foi escaneado/processado
+        const postScanStates = ['authenticated', 'isLogged', 'inChat', 'qrReadSuccess', 'chatsAvailable'];
+
+        if (postScanStates.includes(status)) {
           sessionStatus = 'connected';
+          sessionStates.set(session, 'connected');
           qrCodes.delete(session);
-          console.log(`✅ ${session} authenticated successfully`);
+          console.log(`✅ ${session} authenticated successfully (status: ${status})`);
         }
       },
       headless: true,
@@ -411,6 +418,16 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
         // Listener para mudança de estado da conexão
         client.onStateChange(async (state) => {
           console.log(`🔄 State changed for ${session}: ${state}`);
+          sessionStates.set(session, state);
+
+          // Estados que indicam que o QR já foi escaneado - deve parar de mostrar QR
+          const postScanStates = ['CONNECTED', 'SYNCING', 'OPENING', 'PAIRING', 'RESUMING'];
+          if (postScanStates.includes(state)) {
+            if (qrCodes.has(session)) {
+              console.log(`🔄 ${session} state is ${state}, removing QR code from memory`);
+              qrCodes.delete(session);
+            }
+          }
 
           await sendToWebhook(session, {
             type: 'state',
@@ -433,6 +450,7 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
 
         clients.delete(session);
         qrCodes.delete(session);
+        sessionStates.delete(session);
       });
 
     // Aguardar APENAS o QR code (não o cliente completo)
@@ -482,6 +500,7 @@ app.post('/api/:session/start-session', authenticate, async (req, res) => {
     // Limpar se falhou
     clients.delete(session);
     qrCodes.delete(session);
+    sessionStates.delete(session);
 
     res.status(500).json({
       success: false,
@@ -500,13 +519,34 @@ app.get('/api/:session/qrcode', authenticate, async (req, res) => {
 
   const client = clients.get(session);
   const qrCode = qrCodes.get(session);
+  const currentState = sessionStates.get(session);
 
-  // Verificar se está conectado
+  // Estados que indicam que o QR já foi processado (escaneado ou autenticado)
+  const postScanStates = ['CONNECTED', 'SYNCING', 'OPENING', 'PAIRING', 'RESUMING', 'connected', 'authenticated', 'isLogged', 'inChat', 'qrReadSuccess', 'chatsAvailable'];
+
+  // Verificar primeiro pelo estado da sessão (mais confiável durante SYNCING)
+  if (currentState && postScanStates.includes(currentState)) {
+    console.log(`✅ Session ${session} is in post-scan state: ${currentState}`);
+    // Garantir que o QR seja removido
+    qrCodes.delete(session);
+    return res.json({
+      success: true,
+      session,
+      connected: currentState === 'CONNECTED' || currentState === 'connected',
+      status: currentState === 'SYNCING' ? 'syncing' : 'connected',
+      qrCode: null,
+      message: currentState === 'SYNCING' ? 'Session syncing - please wait' : 'Session already connected'
+    });
+  }
+
+  // Fallback: Verificar se está conectado via client.isConnected()
   if (client) {
     try {
       const isConnected = await client.isConnected();
       if (isConnected) {
-        console.log(`✅ Session ${session} is already connected`);
+        console.log(`✅ Session ${session} is already connected (via isConnected check)`);
+        qrCodes.delete(session);
+        sessionStates.set(session, 'connected');
         return res.json({
           success: true,
           session,
@@ -527,7 +567,8 @@ app.get('/api/:session/qrcode', authenticate, async (req, res) => {
       success: false,
       error: 'QR Code not available',
       message: 'Session may be connected or not started',
-      connected: false
+      connected: false,
+      status: currentState || 'unknown'
     });
   }
 
@@ -545,13 +586,15 @@ app.get('/api/:session/qrcode', authenticate, async (req, res) => {
 app.get('/api/:session/status', authenticate, async (req, res) => {
   const { session } = req.params;
   const client = clients.get(session);
+  const currentState = sessionStates.get(session);
 
   if (!client) {
-    return res.json({ 
+    return res.json({
       success: false,
       status: 'notLogged',
       session,
-      connected: false
+      connected: false,
+      state: currentState || null
     });
   }
 
@@ -560,20 +603,32 @@ app.get('/api/:session/status', authenticate, async (req, res) => {
       client.isConnected(),
       new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
     ]);
-    
+
+    // Determinar status baseado no estado atual e isConnected
+    let status = 'notLogged';
+    if (isConnected) {
+      status = 'connected';
+    } else if (currentState === 'SYNCING') {
+      status = 'syncing';
+    } else if (currentState) {
+      status = currentState;
+    }
+
     res.json({
       success: true,
       session,
-      status: isConnected ? 'connected' : 'notLogged',
-      connected: isConnected
+      status,
+      connected: isConnected,
+      state: currentState || null
     });
   } catch (error) {
     console.error(`Status check error for ${session}:`, error.message);
-    res.json({ 
+    res.json({
       success: false,
       status: 'error',
       error: error.message,
-      connected: false
+      connected: false,
+      state: currentState || null
     });
   }
 });
@@ -601,22 +656,24 @@ app.post('/api/:session/logout', authenticate, async (req, res) => {
     await client.close();
     clients.delete(session);
     qrCodes.delete(session);
-    
-    res.json({ 
+    sessionStates.delete(session);
+
+    res.json({
       success: true,
       message: 'Logged out successfully',
       session
     });
   } catch (error) {
     console.error(`Logout error for ${session}:`, error.message);
-    
+
     // Força remoção mesmo com erro
     clients.delete(session);
     qrCodes.delete(session);
-    
-    res.status(500).json({ 
+    sessionStates.delete(session);
+
+    res.status(500).json({
       success: false,
-      error: error.message 
+      error: error.message
     });
   }
 });
@@ -1283,10 +1340,11 @@ const shutdown = async (signal) => {
   }
 
   await Promise.allSettled(closePromises);
-  
+
   clients.clear();
   qrCodes.clear();
-  
+  sessionStates.clear();
+
   if (pool) {
     await pool.end();
   }
