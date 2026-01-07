@@ -58,6 +58,33 @@ const qrCodes = new Map();
 const webhooks = new Map();
 const sessionStates = new Map(); // Rastrear estado atual de cada sessão (SYNCING, CONNECTED, etc.)
 
+// Função helper para obter número do telefone conectado
+async function getPhoneNumber(client) {
+  try {
+    const hostDevice = await client.getHostDevice();
+    if (hostDevice && hostDevice.wid) {
+      // O wid vem no formato "5511999999999@c.us"
+      const number = hostDevice.wid.user || hostDevice.wid._serialized?.split('@')[0];
+      if (number) {
+        // Formatar como +55 11 99999-9999
+        const cleaned = number.replace(/\D/g, '');
+        if (cleaned.length >= 10) {
+          const countryCode = cleaned.slice(0, 2);
+          const areaCode = cleaned.slice(2, 4);
+          const firstPart = cleaned.slice(4, cleaned.length - 4);
+          const lastPart = cleaned.slice(-4);
+          return `+${countryCode} ${areaCode} ${firstPart}-${lastPart}`;
+        }
+        return `+${cleaned}`;
+      }
+    }
+    return null;
+  } catch (err) {
+    console.error('Error getting phone number:', err.message);
+    return null;
+  }
+}
+
 // Função para enviar mensagem para webhook com retry
 async function sendToWebhook(session, data, retries = 3) {
   const webhookUrl = webhooks.get(session);
@@ -529,12 +556,21 @@ app.get('/api/:session/qrcode', authenticate, async (req, res) => {
     console.log(`✅ Session ${session} is in post-scan state: ${currentState}`);
     // Garantir que o QR seja removido
     qrCodes.delete(session);
+
+    // Obter número do telefone se conectado
+    let phoneNumber = null;
+    const isFullyConnected = currentState === 'CONNECTED' || currentState === 'connected';
+    if (client && isFullyConnected) {
+      phoneNumber = await getPhoneNumber(client);
+    }
+
     return res.json({
       success: true,
       session,
-      connected: currentState === 'CONNECTED' || currentState === 'connected',
+      connected: isFullyConnected,
       status: currentState === 'SYNCING' ? 'syncing' : 'connected',
       qrCode: null,
+      phoneNumber,
       message: currentState === 'SYNCING' ? 'Session syncing - please wait' : 'Session already connected'
     });
   }
@@ -547,12 +583,17 @@ app.get('/api/:session/qrcode', authenticate, async (req, res) => {
         console.log(`✅ Session ${session} is already connected (via isConnected check)`);
         qrCodes.delete(session);
         sessionStates.set(session, 'connected');
+
+        // Obter número do telefone
+        const phoneNumber = await getPhoneNumber(client);
+
         return res.json({
           success: true,
           session,
           connected: true,
           status: 'connected',
           qrCode: null,
+          phoneNumber,
           message: 'Session already connected'
         });
       }
@@ -616,11 +657,18 @@ app.get('/api/:session/status', authenticate, async (req, res) => {
       status = currentState;
     }
 
+    // Obter número do telefone se conectado
+    let phoneNumber = null;
+    if (isConnected) {
+      phoneNumber = await getPhoneNumber(client);
+    }
+
     res.json({
       success: true,
       session,
       status,
       connected: isConnected,
+      phoneNumber,
       state: currentState || null
     });
   } catch (error) {
@@ -630,6 +678,7 @@ app.get('/api/:session/status', authenticate, async (req, res) => {
       status: 'error',
       error: error.message,
       connected: false,
+      phoneNumber: null,
       state: currentState || null
     });
   }
